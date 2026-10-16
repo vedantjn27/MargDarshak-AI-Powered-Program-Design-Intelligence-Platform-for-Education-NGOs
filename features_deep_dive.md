@@ -1,328 +1,103 @@
-# 🔬 MargDarshak — Features Deep Dive
+# MargDarshak feature reference
 
-> **Comprehensive analysis of every feature: technical implementation, impact, and what makes it unique.**
+This describes the features in the current checkout. For a single story showing how they fit together, read [PROJECT_OVERVIEW_AND_WORKFLOW.md](PROJECT_OVERVIEW_AND_WORKFLOW.md). The fictional inputs in [MANUAL_TEST_INPUTS.md](MANUAL_TEST_INPUTS.md) help you try them.
 
----
+## 1. Account and organization workspace
 
-## Overview
+**What it does:** A user signs up or logs in, then registers one organization before reaching the dashboard. The profile records its thematic focus, location, scale, and other context. The dashboard can switch between that organization's selected themes.
 
-MargDarshak is not just a form builder or document generator. It is a **structured intelligence layer** built on top of proven program design methodologies — Logical Framework Analysis (LFA), Theory of Change (ToC), and Results-Based Management (RBM) — made accessible to non-expert NGO professionals through AI guidance, gamification, and contextual adaptation.
+**Why it matters:** The design should reflect the organization that owns it. FastAPI checks the session and organization ownership before serving protected data. Passwords are hashed; the browser receives an HTTP-only session cookie. The Next.js proxy forwards that cookie to FastAPI.
 
----
+**Where:** `backend/auth_service.py`, `backend/main.py`, `frontend/app/auth/`, `frontend/components/dashboard-layout.tsx`, and `frontend/app/api/proxy/`.
 
-## Feature 1 — Intelligent Organization Setup & Onboarding
+## 2. Guided dashboard and program map
 
-### What it does
-Captures the NGO's full organizational context:
-- **Geography:** State, district, region
-- **Program Theme:** Literacy, numeracy, STEM, life skills, etc.
-- **Scale:** Number of schools, students, districts
-- **Organizational Maturity:** First-time vs. experienced program designers
+**What it does:** The dashboard groups work into five stages and shows progress and a visual program map. Each feature page explains its purpose and next step while retaining its own tabs.
 
-### Technical Implementation
-- MongoDB `organization_profiles` collection stores persistent org data
-- Profile data drives all downstream AI suggestions and content personalization
-- Zustand global store (`useAppStore`) caches org state for seamless navigation
-- Context-aware `state_context_rules` collection aligns design pathways to geography
+**Why it matters:** A first-time program designer can see what has been entered and where the plan is incomplete. The active theme's snapshot is kept in Zustand browser state.
 
-### Impact
-| Before MargDarshak | With MargDarshak |
-|-------------------|-----------------|
-| Generic design tools with no sector knowledge | Personalized journey from first click |
-| One-size-fits-all templates | Geography- and theme-specific guidance |
-| Long onboarding sessions with consultants | 5-minute self-onboarding |
+**Where:** `frontend/app/dashboard/page.tsx`, `frontend/components/workflow-guide.tsx`, `frontend/components/program-map.tsx`, and `frontend/lib/store.ts`.
 
-### Uniqueness
-Most program design tools are **geography-agnostic**. MargDarshak's district-level contextual intelligence means a Rajasthan literacy NGO gets different suggestions than a Mumbai STEM program — reflecting India's real-world diversity.
+## 3. Problem definition, refinement, and tree
 
----
+**What it does:** Users describe a problem in detail, review a short AI gist, choose the wording to keep, and build a cause → problem → effect tree. The page also shows possible stakeholders and evidence to verify.
 
-## Feature 2 — AI-Assisted Problem Definition & Refinement
+**Why it matters:** A precise problem and visible assumptions help a team investigate causes before choosing an intervention. Suggested evidence is a collection plan, not a claim that evidence already exists.
 
-### What it does
-Guides NGOs to define **clear, evidence-based problem statements** rather than vague complaints or premature solutions.
+**Where:** `frontend/app/dashboard/problem/page.tsx`, `backend/main.py`, and `backend/presentation.py`.
 
-- AI **clarity scoring** evaluates problem statements on specificity, measurability, and evidence basis
-- Flags **solution bias** — e.g., "We need more teachers" reframed as "Students in Grade 3 lack foundational literacy"
-- **Problem Tree** (root cause analysis) maps causes and effects systematically
-- **Ecosystem problem pattern** library matches org context to known sector challenges
-- **District challenge database** provides real data to ground problem definitions
+## 4. Student outcomes and timeline
 
-### Technical Implementation
-- `problem_statements` collection stores raw and refined statements
-- `problem_refinements` collection tracks AI revision history
-- `problem_trees` stores cause-effect tree structures as JSON graph data
-- `ecosystem_problem_patterns` powers AI pattern-matching recommendations
-- Rule-based heuristic engine evaluates statement quality (no LLM required — explainable AI)
+**What it does:** Users enter the student change they want. A rule-based SMART check looks for specificity, measurement, realistic framing, relevance, and time bounds. AI proposes a sequence of milestones and the frontend draws a larger visual timeline.
 
-### Impact
-- Eliminates the most common failure mode in program design: **treating symptoms as root causes**
-- Reduces consultant dependency for problem analysis by **80%+**
-- Programs designed with clear problem statements are **3× more likely to achieve outcomes**
+**Why it matters:** Teams can distinguish the intended student result from activities and decide when to assess progress. SMART feedback checks wording and data supplied; it cannot establish that a target is achievable in the field.
 
-### Uniqueness
-Most NGO tools start with "What do you want to do?" — MargDarshak starts with "What problem are you solving and why?" This **shift from activity-thinking to problem-thinking** is the single most important design intervention.
+**Where:** `backend/smart_validation.py`, `frontend/app/dashboard/outcomes/page.tsx`, and `frontend/components/outcome-timeline.tsx`.
 
----
+## 5. Methodology library
 
-## Feature 3 — SMART Student Outcome Designer
+**What it does:** Users browse methods relevant to the organization's theme, read short full-screen explanations and example workflows, and save selections. The catalog can provide starter entries when the database library is empty.
 
-### What it does
-Transforms vague aspirations into **SMART (Specific, Measurable, Achievable, Relevant, Time-bound)** learning outcomes.
+**Why it matters:** The outcome says what should change; the method says how the team plans to act. Fit notes help compare methods against the organization's problem and capacity.
 
-- Age-appropriate outcome templates for different student populations
-- Aligned to **NEP 2020** learning competencies and state curriculum frameworks
-- Competency framework library covering cognitive, socio-emotional, and life skill domains
-- Policy reference integration links outcomes to national education goals
+**Where:** `backend/methodology_catalog.py`, `frontend/app/dashboard/methodology/page.tsx`, and `frontend/components/methodology-detail-dialog.tsx`.
 
-### Technical Implementation
-- `student_outcomes` collection stores designed outcomes per organization
-- `competency_frameworks` library with pre-built education competency taxonomies
-- `policy_references` maps outcomes to NEP 2020 and state policies
-- Zod schema validation on frontend ensures outcomes meet SMART criteria before saving
+## 6. Stakeholders and practice changes
 
-### Impact
-| Issue | Solution |
-|-------|---------|
-| Vague outcomes like "students will learn better" | Specific: "80% of Grade 5 students achieve Level 3 reading fluency by March" |
-| Outcomes disconnected from evidence | Anchored to NEP competency frameworks |
-| No measurement plan | Built-in measurability criteria from day one |
+**What it does:** Users choose people involved in the program and record what they do now and what they should do differently. AI suggestions are shown as compact cards with an action to try.
 
-### Uniqueness
-The **NEP 2020 alignment** is India-specific and not found in international program design tools. This makes MargDarshak the **only platform that speaks the language of India's education policy ecosystem**.
+**Why it matters:** Student change usually depends on repeated actions by teachers, caregivers, school leaders, or other actors. Suggested current practices must be verified locally.
 
----
+**Where:** `backend/practice_suggestions.py`, `frontend/app/dashboard/stakeholders/page.tsx`, and `frontend/components/practice-suggestion-board.tsx`.
 
-## Feature 4 — Evidence-Based Methodology Selection
+## 7. Theory of Change
 
-### What it does
-Helps NGOs choose **proven educational interventions** matched to their problem and outcome context.
+**What it does:** Users define labeled activity, output, outcome, and impact nodes and connect them with causal arrows. Structural validation checks graph issues, and AI suggests improvements. The diagram is rendered with Mermaid in the browser.
 
-- Curated methodology library (tutoring, peer learning, digital interventions, community engagement, etc.)
-- Context-aware recommendations based on organization profile
-- Links each methodology to Theory of Change as an intervention node
-- Supports blended, technology-led, community-based, and teacher-capacity approaches
-
-### Technical Implementation
-- `methodology_library` collection with structured methodology objects
-- `selected_methodologies` stores org-level selections
-- Methodology data feeds directly into ToC builder as intervention inputs
-
-### Impact
-- Prevents the common mistake of choosing fashionable but unproven interventions
-- Reduces time spent on intervention design research by **60%+**
-- Ensures logic consistency: problem → methodology → outcome
-
-### Uniqueness
-The methodology library is **pre-filtered for the Indian education context** — including government-partnered models, low-resource approaches, and multilingual interventions — unlike generic toolkits.
-
----
-
-## Feature 5 — Gamified Theory of Change Builder
-
-### What it does
-Breaks down the complex Theory of Change (ToC) methodology — traditionally requiring specialized consultants — into a **guided, step-by-step visual experience**.
-
-- Maps the causal chain: **Inputs → Activities → Outputs → Outcomes → Impact**
-- Visual network graph generation using **NetworkX + Matplotlib** on the backend
-- **Mermaid.js** live diagram rendering in the browser
-- AI validation of logical coherence: flags broken causal links
-- Pre-built ToC pattern library from similar NGO programs
-
-### Technical Implementation
-- `theory_of_change` collection stores ToC data per organization
-- `toc_pattern_library` provides searchable pattern templates
-- Backend generates PNG/SVG network graphs via NetworkX + Matplotlib
-- Frontend renders interactive Mermaid diagrams via `mermaid-diagram.tsx` component
-- Gamification: progress indicators, step completion badges, coherence score
+**Why it matters:** A visible causal story makes gaps and assumptions easier to discuss. A structurally valid diagram is a coherent plan, not proof that the intervention will work.
 
-### Impact
-| Traditional Approach | MargDarshak Approach |
-|---------------------|---------------------|
-| Requires expensive facilitation workshops | Self-guided with AI validation |
-| Takes 2–5 days of consultant time | Complete in 2–4 hours |
-| Static diagram created once | Living model that updates with program changes |
-| No logic validation | Real-time causal coherence checks |
-
-### Uniqueness
-The **dual rendering approach** (NetworkX for backend diagram generation + Mermaid.js for live browser visualization) allows both static document exports and interactive editing — a combination not seen in other sector tools.
-
----
-
-## Feature 6 — Stakeholder & Practice Mapping
-
-### What it does
-Systematically identifies all actors in the education ecosystem and defines the **practice changes required from each** for the program to succeed.
-
-- Master stakeholder database: students, teachers, headmasters, parents, CRCs, BRCs, district officers, CSOs
-- Practice change definition for each stakeholder role
-- Ecosystem-level mapping connects stakeholders across the system
-- Organization-level customization of the master database
+**Where:** `backend/toc_logic.py`, `frontend/app/dashboard/theory-of-change/page.tsx`, and `frontend/components/toc-suggestion-board.tsx`.
 
-### Technical Implementation
-- `stakeholder_master` collection — global stakeholder taxonomy
-- `organization_stakeholders` collection — org-specific stakeholder selections
-- `practice_master` and `practice_changes` collections link actors to required behaviors
-- Stakeholder data feeds into Theory of Change as system actor nodes
+## 8. Indicators, baselines, and targets
 
-### Impact
-- Programs that define **practice changes for all stakeholders** are 2× more likely to sustain impact
-- Helps NGOs move from a "beneficiary-only" view to a **systems-change perspective**
-- Required by most institutional funders (Ford Foundation, USAID, Gates Foundation, etc.)
+**What it does:** AI proposes one measurable indicator for each saved student outcome and desired stakeholder practice. The backend sends short IDs to the model, maps the results back to the original inputs, and retries omitted items. Users then enter a baseline, a real current value if available, a target, and dates. The frontend shows progress only from actual values.
 
-### Uniqueness
-The **practice change framework** — asking not just "who are your stakeholders?" but "what specifically do they need to do differently?" — is rooted in Systems Thinking and is a hallmark of high-quality program design that most tools skip entirely.
-
----
+**Why it matters:** Each intended change needs a measure. A blank current value remains unmeasured, and a target is a plan rather than an achieved result.
 
-## Feature 7 — Indicator & Measurement Framework
-
-### What it does
-Automatically generates a **complete measurement framework** aligned to the program's outcomes and ToC.
-
-- Auto-suggests indicators from a curated master library
-- Baseline setting tools with historical data reference
-- Target-setting with milestone timelines
-- Links each indicator to specific Theory of Change nodes
+**Where:** `backend/indicator_generation.py`, `backend/main.py`, and `frontend/app/dashboard/indicators/page.tsx`.
 
-### Technical Implementation
-- `indicator_master` — 200+ pre-built education indicators
-- `generated_indicators` — AI-selected indicators per org
-- `indicator_targets` — baseline, target, milestone, and timeline data
-- Indicator data feeds directly into LFA export formats
+## 9. Quality review and design coach
 
-### Impact
-| Challenge | Resolution |
-|-----------|------------|
-| NGOs pick "easy to measure" not "meaningful" indicators | AI suggests outcome-aligned indicators |
-| No baseline data → no measurement possible | Prompts baseline-setting before program launch |
-| Indicators disconnected from ToC | Every indicator linked to a ToC node |
+**What it does:** Completeness checks the entered design sections. Design feedback identifies issues with clarity, measurement, or logic and links to the relevant page. The AI coach proposes one next action grounded in saved work.
 
-### Uniqueness
-The **master indicator library** is built specifically for India's education sector — including government school metrics (ASER, NAS, NIPUN), community-level indicators, and socio-emotional learning measures.
+**Why it matters:** A plan with a polished diagram may still lack evidence, a baseline, or a link between activities and outcomes. Quality review helps find those gaps before sharing.
 
----
+**Where:** `backend/main.py`, `frontend/app/dashboard/quality/page.tsx`, and `frontend/app/dashboard/page.tsx`.
 
-## Feature 8 — Quality Assurance & LFA Completeness Scoring
-
-### What it does
-Acts as an **automated design reviewer** — evaluating the entire program design for completeness, coherence, and quality before submission.
+## 10. Templates and catalog imagery
 
-- Real-time **completeness scores** for each design section (0–100%)
-- Multi-dimensional **quality metrics**: Clarity, Alignment, Measurability, Logic
-- Specific, actionable design feedback highlighting gaps
-- Overall LFA readiness score with go/no-go recommendation
+**What it does:** Users browse starter templates, read their full-screen detail, fork one under a useful name, and keep that copy in the organization's saved list. The template and methodology cards use thematic cover images.
 
-### Technical Implementation
-- `lfa_completeness_scores` stores section-by-section scores
-- `design_quality_feedback` collection stores AI feedback per section
-- Recharts PieChart and BarChart visualize quality metrics on dashboard
-- StatCard components display live completeness and quality percentages
-
-### Impact
-- Ensures no program reaches funders with **incomplete or incoherent design**
-- Replaces expensive external design reviews
-- Creates a **quality culture** within NGO teams
-
-### Uniqueness
-The quality scoring is **explainable** — every score comes with a specific reason and a suggestion to improve it. This is very different from black-box AI ratings, making it suitable for accountability-driven sector.
-
----
-
-## Feature 9 — Multi-Format Export Engine
-
-### What it does
-Transforms the completed program design into **professional, funder-ready documents** in multiple formats — automatically.
-
-| Format | Use Case | Library |
-|--------|---------|---------|
-| **PDF** | Funder submission, board reports | ReportLab |
-| **Excel (XLSX)** | M&E planning, indicator tracking | OpenPyXL |
-| **Word (DOCX)** | Narrative reports, project proposals | python-docx |
-| **PowerPoint (PPTX)** | Donor presentations, board decks | python-pptx |
-| **Network Diagram (PNG)** | Visual ToC for reports and presentations | NetworkX + Matplotlib |
-
-### Technical Implementation
-- `export_jobs` collection manages background export processing
-- FastAPI background tasks handle large document generation asynchronously
-- Frontend export panel shows real-time job status
-- Each export format has a dedicated generation function in `backend/main.py`
-
-### Impact
-- Eliminates **20–40 hours** of manual document formatting per program design cycle
-- Ensures **consistent branding and structure** across all organizational documents
-- Enables NGOs to respond to funder RFPs **in hours, not days**
-
-### Uniqueness
-**Five export formats from one design process** — no other Indian social sector tool offers this breadth of output formats from a single program design workflow.
-
----
-
-## Feature 10 — Multilingual Intelligence (English + Hindi)
-
-### What it does
-Makes the entire MargDarshak experience accessible in both **English and Hindi** with a single click — including UI labels, AI suggestions, and content generation.
-
-- Full interface translation via `language-provider.tsx` context
-- Language-aware content in AI suggestions and feedback
-- One-click toggle between English and Hindi anywhere in the app
-- Backend middleware-based translation layer using `googletrans`
-
-### Technical Implementation
-- `language-provider.tsx` provides React context with `t()` translation function
-- All UI strings stored as key-value translation maps for both languages
-- `useLanguage()` hook consumed by every page and component
-- Backend translation via `googletrans 4.0.0-rc1` for AI-generated content
-
-### Impact
-- Enables NGO professionals who are **more comfortable in Hindi** to fully use the platform
-- Breaks the language barrier that prevents many grassroots organizations from adopting technology
-- Directly supports India's **Digital India and education equity** goals
-
-### Uniqueness
-The language architecture is **component-level** — not page-level — meaning you can switch languages mid-session without losing any data or context, and every single element updates instantly. This is a significant UX achievement for a multilingual React application.
-
----
-
-## Feature 11 — Program Design Template Library
-
-### What it does
-Provides **pre-built, rated program design templates** from similar organizations so NGOs don't start from zero.
-
-- Template browser with filtering by theme, geography, and scale
-- Community ratings and reviews for each template
-- Import a template to pre-populate all design sections
-- Organization-level custom templates for internal reuse
-
-### Technical Implementation
-- `lfa_templates` — global template library
-- `organization_templates` — org-specific saved templates
-- `template_ratings` — community rating data
-- Templates dashboard page at `/dashboard/templates`
-
-### Impact
-- Reduces time-to-first-draft from days to **under an hour**
-- Enables smaller NGOs to **learn from more experienced organizations**
-- Creates a **sector-wide knowledge commons** for education program design
-
----
-
-## Summary — Uniqueness Matrix
-
-| Feature | Sector-Specific | AI-Powered | India-Context | Explainable | Multi-Output |
-|---------|:--------------:|:----------:|:------------:|:-----------:|:-----------:|
-| Organization Setup | ✅ | ✅ | ✅ | ✅ | — |
-| Problem Definition | ✅ | ✅ | ✅ | ✅ | — |
-| SMART Outcomes | ✅ | ✅ | ✅ (NEP 2020) | ✅ | — |
-| Methodology Selection | ✅ | ✅ | ✅ | ✅ | — |
-| Theory of Change | ✅ | ✅ | — | ✅ | ✅ |
-| Stakeholder Mapping | ✅ | — | ✅ | ✅ | — |
-| Indicator Framework | ✅ | ✅ | ✅ (ASER/NAS) | ✅ | — |
-| Quality Assurance | ✅ | ✅ | — | ✅ | — |
-| Export Engine | — | — | — | — | ✅ (5 formats)|
-| Multilingual | — | ✅ | ✅ (EN + HI) | — | — |
-| Template Library | ✅ | — | ✅ | — | — |
-
----
-
-> _"From intention to impact — MargDarshak turns ideas into implementable change."_
+**Why it matters:** A starter structure reduces blank-page effort but still requires the organization to replace example prompts and check its own facts.
+
+**Where:** `backend/template_catalog.py`, `frontend/app/dashboard/templates/page.tsx`, `frontend/components/template-detail-dialog.tsx`, and `frontend/public/covers/`.
+
+## 11. Export
+
+**What it does:** The export page currently offers an LFA PDF, program PowerPoint, indicator spreadsheet, budget spreadsheet, and Theory of Change PNG. PDF and slides can include program diagrams and charts from the saved design.
+
+**Why it matters:** Teams can review and present the same plan in formats suited to a meeting, analysis, or sharing. The files present readable content rather than raw JSON.
+
+**Where:** `backend/export_service.py`, `backend/export_visuals.py`, `backend/assets/`, and `frontend/app/dashboard/export/page.tsx`.
+
+## 12. English and Hindi
+
+**What it does:** The interface has English and Hindi copy; the backend can translate JSON response values. Export labels and fonts also support Hindi.
+
+**Why it matters:** Colleagues can inspect the design in the language they use most comfortably. Translation quality should still be checked before external publication.
+
+**Where:** `frontend/components/language-provider.tsx`, `backend/main.py`, `backend/export_service.py`, and `backend/assets/`.
+
+## How AI is used
+
+`backend/ai_service.py` retrieves relevant saved and shared records, ranks them by embedding similarity, calls Mistral or Gemini, validates the expected response shape, and returns structured fields. This is retrieval-augmented generation (RAG) over application records; it is not live web research. The guided design coach and page tasks are task-specific agentic behavior with human review, rather than an autonomous multi-agent system.

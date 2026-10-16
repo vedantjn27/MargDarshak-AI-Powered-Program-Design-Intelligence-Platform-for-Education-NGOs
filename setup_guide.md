@@ -1,380 +1,130 @@
-# ⚙️ MargDarshak — Complete Setup Guide
+# MargDarshak setup guide
 
-> **AI-Powered Program Design Platform for Education NGOs**
-> Backend: FastAPI (Python) | Frontend: Next.js 16 + React 19 | Database: MongoDB Atlas
+This guide describes the current FastAPI backend, Next.js frontend, and account-based organization workflow. Commands below assume you start at the repository root. See [README.md](README.md) for the product workflow.
 
----
+## Requirements
 
-## 📋 Table of Contents
+- Python **3.11 or 3.12** (`backend/.python-version` pins deployment to 3.11.9; this machine's local venv uses 3.12.5)
+- Node.js **20.9 or newer** (required by the installed Next.js 16 package) and npm
+- A running local MongoDB server or a MongoDB Atlas connection string
+- A Mistral API key, Gemini API key, or both for AI-assisted features
 
-1. [Prerequisites](#prerequisites)
-2. [Clone the Repository](#clone-the-repository)
-3. [Backend Setup](#backend-setup-fastapi--mongodb)
-4. [Frontend Setup](#frontend-setup-nextjs--react)
-5. [Running the Full Application](#running-the-full-application)
-6. [Environment Variables Reference](#environment-variables-reference)
-7. [MongoDB Collections](#mongodb-collections-auto-created)
-8. [API Documentation](#api-documentation)
-9. [Deployment Guide](#deployment-guide)
-10. [Troubleshooting](#troubleshooting)
-11. [Useful Commands](#useful-commands)
+The app can start without an AI key, but AI actions will report that assistance is unavailable. Install and run the local backend through `backend/.venv`. This keeps its packages separate from other Python projects.
 
----
+## 1. Start the backend
 
-## Prerequisites
+In a terminal:
 
-Ensure the following are installed before proceeding:
-
-| Requirement | Version | Download |
-|------------|---------|----------|
-| **Python** | 3.10+ | [python.org](https://www.python.org/downloads/) |
-| **Node.js** | 18+ | [nodejs.org](https://nodejs.org/) |
-| **npm** | 9+ | Bundled with Node.js |
-| **MongoDB** | Local or Atlas | [mongodb.com](https://www.mongodb.com/) |
-| **Git** | Any | [git-scm.com](https://git-scm.com/) |
-
-Verify your environment:
-```bash
-python --version       # Python 3.10+
-node --version         # v18+
-npm --version          # 9+
-git --version
-```
-
----
-
-## Clone the Repository
-
-```bash
-git clone https://github.com/vedantjn27/MargDarshak-Shikshalokam.git
-cd MargDarshak-Shikshalokam
-```
-
-Or download the ZIP and extract it, then navigate to the folder.
-
----
-
-## Backend Setup (FastAPI + MongoDB)
-
-### Step 1 — Navigate to backend directory
-```bash
+```powershell
 cd backend
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
-### Step 2 — Create a Python virtual environment
+Open `backend/.env` and set `MONGODB_URI` to your database. Set at least one of `MISTRAL_API_KEY` or `GEMINI_API_KEY` to use AI features. The example file also shows model settings, `DB_NAME`, `FRONTEND_ORIGINS`, and `AUTH_COOKIE_SECURE`. Keep the real `.env` private; it is ignored by Git.
 
-**Windows:**
-```bash
-python -m venv venv
-venv\Scripts\activate
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn main:app --reload --port 8000
 ```
 
-**macOS / Linux:**
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
+The API is at `http://localhost:8000`; Swagger UI is at `http://localhost:8000/docs`. Run from `backend/` so `main.py` loads the local `.env` file.
 
-You should see `(venv)` in your terminal prompt when activated.
+The commands above use the venv's interpreter directly, so PowerShell activation is unnecessary. On macOS or Linux, create the venv with `python3 -m venv .venv` and use `./.venv/bin/python` in place of `.\.venv\Scripts\python.exe`.
 
-### Step 3 — Install Python dependencies
-```bash
-pip install -r requirements.txt
-```
+Mistral chat and embeddings are attempted first when configured. The backend tries its configured fallback Mistral model after a model rate limit, and can use Gemini when Mistral is unavailable. Gemini can also run alone. Model availability and API limits depend on your provider account.
 
-### Step 4 — Create the `.env` file
+## 2. Start the frontend
 
-Create a file named `.env` inside the `backend/` directory:
+In a second terminal, from the repository root:
 
-```env
-MONGODB_URI=mongodb+srv://<username>:<password>@cluster.mongodb.net/margdarshak
-DB_NAME=margdarshak
-```
-
-**For local MongoDB:**
-```env
-MONGODB_URI=mongodb://localhost:27017/margdarshak
-DB_NAME=margdarshak
-```
-
-> **Note:** Never commit your `.env` file. It is already in `.gitignore`.
-
-### Step 5 — Run the backend server
-```bash
-uvicorn main:app --reload --port 8000
-```
-
-Expected output:
-```
-INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
-INFO:     Started reloader process
-INFO:     Application startup complete.
-```
-
-- **API Base URL:** `http://localhost:8000`
-- **Swagger Docs:** `http://localhost:8000/docs`
-- **ReDoc Docs:** `http://localhost:8000/redoc`
-
----
-
-## Frontend Setup (Next.js + React)
-
-### Step 1 — Open a NEW terminal and navigate to frontend
-```bash
+```powershell
 cd frontend
-```
-
-### Step 2 — Install Node.js dependencies
-```bash
-npm install
-```
-
-If you encounter peer dependency issues:
-```bash
-npm install --legacy-peer-deps
-```
-
-### Step 3 — Create `.env.local` file
-
-Create a file named `.env.local` inside the `frontend/` directory:
-
-```env
-NEXT_PUBLIC_API_URL=http://localhost:8000
-```
-
-For the deployed backend:
-```env
-NEXT_PUBLIC_API_URL=https://margdarshak-shikshalokam.onrender.com
-```
-
-### Step 4 — Start the development server
-```bash
+npm ci
 npm run dev
 ```
 
-Expected output:
+Open `http://localhost:3000`. The frontend calls its own `/api/proxy/...` route, which forwards requests and session cookies to FastAPI. For local development, the proxy defaults to `http://localhost:8000`. If the backend has another URL, put this in `frontend/.env.local` and restart Next.js:
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8001
 ```
-▲ Next.js 16.0.10
-  - Local: http://localhost:3000
-  - ready started server on 0.0.0.0:3000
+
+`frontend/.env.local` stays out of Git. Do not put Mistral or Gemini keys in the frontend environment.
+
+## 3. Verify the workflow
+
+1. Open `/auth` and sign up with an email and a password of at least eight characters.
+2. Register an organization and select its thematic focus. The dashboard is available after registration.
+3. Enter a problem, review the AI gist, set a student outcome, select a method and stakeholders, build a Theory of Change, generate indicators, and run the quality check.
+4. Sign out and log in again. The account should reopen its own organization workspace.
+5. Use [MANUAL_TEST_INPUTS.md](MANUAL_TEST_INPUTS.md) for fictional sample data, including a two-account isolation check.
+
+Each account owns one organization. Backend session and ownership checks protect organization API data. The frontend stores a working design snapshot for the active organization and theme in browser state; sign-in remains the source of truth for account access.
+
+## Environment variables
+
+| Location | Variable | Purpose |
+| --- | --- | --- |
+| `backend/.env` | `MONGODB_URI` | Required MongoDB connection string |
+| `backend/.env` | `DB_NAME` | Database name; defaults to `margdarshak` |
+| `backend/.env` | `MISTRAL_API_KEY` | Mistral generation and embeddings |
+| `backend/.env` | `MISTRAL_MODEL`, `MISTRAL_FALLBACK_MODEL` | Optional Mistral chat model choices |
+| `backend/.env` | `GEMINI_API_KEY` | Gemini generation and embeddings fallback |
+| `backend/.env` | `GEMINI_MODEL`, `GEMINI_EMBEDDING_MODEL` | Optional Gemini model choices |
+| `backend/.env` | `AUTH_COOKIE_SECURE` | Use `false` on local HTTP and `true` on HTTPS deployments |
+| `backend/.env` | `FRONTEND_ORIGINS` | Comma-separated allowed frontend origins for direct cross-origin calls |
+| `frontend/.env.local` | `NEXT_PUBLIC_API_URL` | URL of FastAPI used by the Next.js proxy; defaults to local port 8000 |
+
+The template is [`backend/.env.example`](backend/.env.example). Replace placeholders only in a private environment file or deployment settings.
+
+## Dependencies and files
+
+- From `backend/`, install or update packages with `.\.venv\Scripts\python.exe -m pip install -r requirements.txt` on Windows, or `./.venv/bin/python -m pip install -r requirements.txt` on macOS/Linux. Verify the environment with the same interpreter and `-m pip check`.
+- The root [`requirements.txt`](requirements.txt) includes the canonical backend list. npm dependencies are defined by [`frontend/package.json`](frontend/package.json) and [`frontend/package-lock.json`](frontend/package-lock.json).
+- Keep `backend/assets/` and `frontend/public/covers/`: they contain fonts and cover images used by exports and catalog cards.
+- `backend/.venv/` is local and ignored by Git. `node_modules/` and `.next/` are frontend install/build output. Python `__pycache__/` and TypeScript `*.tsbuildinfo` are generated and ignored by Git.
+
+## Deploy
+
+### Backend service
+
+Set the service root to `backend`, install with `pip install -r requirements.txt`, and start with:
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
 
-- **Application URL:** `http://localhost:3000`
+Set `MONGODB_URI`, `DB_NAME`, and the AI keys you use in the service's private environment settings. Set `AUTH_COOKIE_SECURE=true` for HTTPS. Set `FRONTEND_ORIGINS` to the actual frontend origin if direct cross-origin API calls are needed.
 
----
+### Frontend service
 
-## Running the Full Application
+Set the service root to `frontend`, use npm with the committed lockfile, and set `NEXT_PUBLIC_API_URL` to the deployed FastAPI base URL. Browser requests still go to the same-origin Next.js proxy, which forwards cookies. Build with `npm run build` and run with `npm start` on a Node server, or use your hosting provider's Next.js integration.
 
-Open **3 terminals** and run in sequence:
-
-| Terminal | Directory | Command |
-|---------|-----------|---------|
-| **Terminal 1** | Root or MongoDB | `mongod` *(if local)* or use MongoDB Atlas |
-| **Terminal 2** | `backend/` | `uvicorn main:app --reload --port 8000` |
-| **Terminal 3** | `frontend/` | `npm run dev` |
-
-Then open `http://localhost:3000` in your browser.
-
-### Verify Everything is Working
-
-- [ ] `http://localhost:8000/docs` — Swagger UI loads
-- [ ] `http://localhost:3000` — MargDarshak landing page loads
-- [ ] No CORS errors in browser console (F12)
-- [ ] Network requests to `localhost:8000` return 200 OK
-
----
-
-## Environment Variables Reference
-
-### Backend (`backend/.env`)
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `MONGODB_URI` | MongoDB connection string | `mongodb+srv://user:pass@cluster.net/` |
-| `DB_NAME` | Database name | `margdarshak` |
-
-### Frontend (`frontend/.env.local`)
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `NEXT_PUBLIC_API_URL` | Backend API base URL | `http://localhost:8000` |
-
----
-
-## MongoDB Collections (Auto-Created)
-
-The following collections are created automatically on first run:
-
-| Collection | Purpose |
-|-----------|---------|
-| `organization_profiles` | NGO organization data |
-| `state_context_rules` | Geography-based design rules |
-| `ai_context_analysis` | AI analysis results |
-| `problem_statements` | NGO problem statements |
-| `problem_refinements` | AI-refined problem data |
-| `problem_trees` | Root cause analysis trees |
-| `ecosystem_problem_patterns` | Pattern library for problems |
-| `district_challenges` | District-level challenge data |
-| `student_outcomes` | Designed SMART outcomes |
-| `competency_frameworks` | Competency references |
-| `policy_references` | NEP and curriculum references |
-| `methodology_library` | Evidence-based methodologies |
-| `selected_methodologies` | Org-selected methodologies |
-| `theory_of_change` | ToC models per organization |
-| `toc_pattern_library` | Pre-built ToC templates |
-| `stakeholder_master` | Master stakeholder database |
-| `organization_stakeholders` | Org-level stakeholder maps |
-| `practice_master` | Practice change master list |
-| `practice_changes` | Org-level practice definitions |
-| `indicator_master` | Master indicator library |
-| `generated_indicators` | Auto-generated indicators |
-| `indicator_targets` | Targets and timelines |
-| `lfa_completeness_scores` | Quality and completeness scores |
-| `design_quality_feedback` | AI design feedback |
-| `lfa_templates` | LFA template library |
-| `organization_templates` | Org-specific templates |
-| `template_ratings` | Template rating data |
-| `export_jobs` | Background export job queue |
-
----
-
-## API Documentation
-
-Once the backend is running, explore all API endpoints interactively:
-
-- **Swagger UI:** `http://localhost:8000/docs`
-- **ReDoc:** `http://localhost:8000/redoc`
-
-Key API endpoint groups:
-- `/organization/` — Organization profile CRUD
-- `/problem/` — Problem definition and refinement
-- `/outcomes/` — Student outcome management
-- `/methodology/` — Methodology library
-- `/theory-of-change/` — ToC builder endpoints
-- `/stakeholders/` — Stakeholder and practice mapping
-- `/indicators/` — Indicator framework management
-- `/quality/` — LFA scoring and quality checks
-- `/export/` — Multi-format document generation
-- `/templates/` — Template library access
-
----
-
-## Deployment Guide
-
-### Backend — Deploy to Render
-
-1. Push backend code to GitHub
-2. Go to [render.com](https://render.com) and create a **New Web Service**
-3. Connect your GitHub repository
-4. Set **Root Directory** to `backend`
-5. Set **Build Command:** `pip install -r requirements.txt`
-6. Set **Start Command:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
-7. Add environment variables: `MONGODB_URI`, `DB_NAME`
-8. Deploy — your API will be live at `https://your-service.onrender.com`
-
-**Live Backend:** `https://margdarshak-shikshalokam.onrender.com`
-
-### Frontend — Deploy to Vercel
-
-1. Push frontend code to GitHub
-2. Go to [vercel.com](https://vercel.com) and **Import Project**
-3. Select your repository, set **Root Directory** to `frontend`
-4. Add environment variable: `NEXT_PUBLIC_API_URL=https://your-backend.onrender.com`
-5. Click **Deploy**
-
-**Live Frontend:** `https://marg-darshak-shikshalokam.vercel.app`
-
----
+The project records example deployment URLs in [deployment.txt](deployment.txt); check the current service state in the hosting dashboard.
 
 ## Troubleshooting
 
-### Backend Issues
+| Symptom | Check |
+| --- | --- |
+| `MONGODB_URI not set` | Create `backend/.env` from the example and start FastAPI from `backend/`. |
+| `No module named fastapi` | Use `backend/.venv`'s Python to install and start the backend; a plain `python` may point to another environment. |
+| MongoDB connection error | Confirm the server or Atlas connection, credentials, and network access. |
+| Sign-up route returns 404 | Open the Next.js app, confirm `/api/proxy/auth/signup` reaches the running FastAPI server, and restart both after configuration changes. |
+| API proxy returns 502 | Confirm FastAPI is running and `NEXT_PUBLIC_API_URL` points to it from the Next.js server. |
+| AI assistance unavailable | Check the configured provider keys, model names, quota, and backend response. |
+| Indicators say an input was missed | Restart the current backend. Indicator responses now use stable short IDs and retry missing items individually. |
+| CORS error on a direct backend request | Add the exact frontend origin to `FRONTEND_ORIGINS`. The app normally uses its same-origin proxy. |
+| Frontend build fails | Use Node 20.9 or newer, run `npm ci`, then inspect `npm run build` output. |
 
-| Error | Solution |
-|-------|---------|
-| `ModuleNotFoundError` | Ensure venv is activated, run `pip install -r requirements.txt` |
-| `MONGODB_URI not set` | Check that `.env` file exists in `backend/` directory |
-| `ServerSelectionTimeoutError` | Verify MongoDB URI, check Atlas IP whitelist |
-| `Address already in use` | Change port: `uvicorn main:app --reload --port 8001` |
-| `CORS blocked` | Ensure backend is running; CORS is pre-configured for all origins |
+## Useful commands
 
-### Frontend Issues
+```powershell
+# From backend/
+.\.venv\Scripts\python.exe -m uvicorn main:app --reload --port 8000
 
-| Error | Solution |
-|-------|---------|
-| `npm ERR! ERESOLVE` | Run `npm install --legacy-peer-deps` |
-| `Cannot find module` | Delete `node_modules`, run `npm install` again |
-| Styles not loading | Ensure `globals.css` is imported in `app/layout.tsx` |
-| Build fails | Check `tsconfig.json` and run `npm run lint` |
-| API calls failing | Verify `NEXT_PUBLIC_API_URL` in `.env.local` matches backend port |
-
-### MongoDB Issues
-
-| Error | Solution |
-|-------|---------|
-| Connection refused (local) | Start MongoDB: `net start MongoDB` (Win) or `sudo systemctl start mongod` (Linux) |
-| Atlas auth error | Check username/password in connection string |
-| IP not whitelisted | Add your IP in MongoDB Atlas → Network Access |
-
----
-
-## Useful Commands
-
-### Backend
-```bash
-# Activate virtual environment
-venv\Scripts\activate                    # Windows
-source venv/bin/activate                 # macOS/Linux
-
-# Run development server
-uvicorn main:app --reload --port 8000
-
-# Run on all interfaces (for LAN testing)
-uvicorn main:app --host 0.0.0.0 --port 8000
-
-# Check installed packages
-pip list
-
-# Update requirements file
-pip freeze > requirements.txt
-
-# Deactivate virtual environment
-deactivate
+# From frontend/
+npm run dev
+npm run build
+npm start
 ```
-
-### Frontend
-```bash
-npm run dev          # Start development server
-npm run build        # Build for production
-npm start            # Run production build
-npm run lint         # Lint check
-npm install          # Install dependencies
-```
-
-### MongoDB (Local)
-```bash
-mongosh                         # Open MongoDB shell
-show dbs                        # List databases
-use margdarshak                 # Switch to app database
-show collections                # List collections
-db.organization_profiles.find() # View organization data
-```
-
----
-
-## Additional Resources
-
-| Resource | Link |
-|---------|------|
-| FastAPI Docs | [fastapi.tiangolo.com](https://fastapi.tiangolo.com) |
-| Next.js Docs | [nextjs.org/docs](https://nextjs.org/docs) |
-| MongoDB Atlas | [mongodb.com/cloud/atlas](https://www.mongodb.com/cloud/atlas) |
-| shadcn/ui | [ui.shadcn.com](https://ui.shadcn.com) |
-| Zustand | [github.com/pmndrs/zustand](https://github.com/pmndrs/zustand) |
-| Tailwind CSS | [tailwindcss.com](https://tailwindcss.com) |
-| Render Deploy | [render.com](https://render.com) |
-| Vercel Deploy | [vercel.com](https://vercel.com) |
-
----
-
-> _"From intention to impact — MargDarshak turns ideas into implementable change."_
