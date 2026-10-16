@@ -22,6 +22,16 @@ from pptx import Presentation
 from fastapi.background import BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from googletrans import Translator
+from ai_service import generate as ai_generate
+from indicator_generation import indicator_items, read_indicators, indicators_by_input
+from presentation import presentable_text, text_items
+from smart_validation import validate_smart_outcome
+from methodology_catalog import library_theme_query, methodology_for_display, compact_methodology_detail, geography_matches
+from practice_suggestions import normalize_practice_suggestions
+from toc_logic import suggestion_cards, toc_mermaid, validate_toc
+from template_catalog import available_templates, canonical_theme, starter_templates, template_detail
+from export_service import create as create_export
+from auth_service import install_auth
 
 # -------------------- ENV SETUP --------------------
 load_dotenv()
@@ -35,6 +45,24 @@ if not MONGODB_URI:
 # -------------------- DB CONNECTION --------------------
 client = MongoClient(MONGODB_URI)
 db = client[DB_NAME]
+
+def require_organization(organization_id: str):
+    if not ObjectId.is_valid(organization_id):
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+    organization = db.organization_profiles.find_one({"_id": ObjectId(organization_id)})
+    if not organization:
+        raise HTTPException(status_code=404, detail="Register your organization first")
+    return organization
+
+def require_snapshot_owner(organization_id: str, snapshot: Dict[str, Any]):
+    organization = require_organization(organization_id)
+    snapshot_org = snapshot.get("organization_profile", {}).get("organization_id")
+    if snapshot_org and snapshot_org != organization_id:
+        raise HTTPException(400, "Design belongs to another organization")
+    theme = snapshot.get("organization_profile", {}).get("theme")
+    if theme and theme not in organization.get("thematic_focus", []):
+        raise HTTPException(400, "Design theme is not in the organization profile")
+    return organization
 
 # -------------------- DB COLLECTION CREATION --------------------
 organization_profiles_collection = db.organization_profiles
@@ -72,11 +100,12 @@ app = FastAPI(
     version="1.0.0",
     description="AI-powered program design backend for education NGOs"
 )
+install_auth(app, db)
 
 # -------------------- CORS --------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=os.getenv("FRONTEND_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -141,7 +170,7 @@ class OrganizationProfileDB(BaseModel):
 
 # Organization Profile Creation Endpoint
 @app.post("/organization/profile", response_model=OrganizationProfileDB)
-def create_organization_profile(payload: OrganizationProfileCreate):
+def create_organization_profile(payload: OrganizationProfileCreate, request: Request):
 
     existing = organization_profiles_collection.find_one({
         "organization_name": payload.organization_name
@@ -153,12 +182,26 @@ def create_organization_profile(payload: OrganizationProfileCreate):
             detail="Organization profile already exists"
         )
 
+    user_id = request.state.user["_id"]
+    org_id = ObjectId()
+    claim = db.users.update_one(
+        {"_id": user_id, "organization_id": None},
+        {"$set": {"organization_id": str(org_id)}},
+    )
+    if claim.modified_count != 1:
+        raise HTTPException(status_code=409, detail="This account already has an organization.")
+
     doc = payload.dict()
+    doc["_id"] = org_id
+    doc["owner_user_id"] = str(user_id)
     doc["created_at"] = utc_now()
     doc["updated_at"] = utc_now()
 
-    result = organization_profiles_collection.insert_one(doc)
-    doc["_id"] = result.inserted_id
+    try:
+        organization_profiles_collection.insert_one(doc)
+    except Exception:
+        db.users.update_one({"_id": user_id, "organization_id": str(org_id)}, {"$set": {"organization_id": None}})
+        raise
 
     return serialize_mongo(doc)
 
@@ -290,6 +333,7 @@ class ProblemEvidence(BaseModel):
 
 class ProblemStatementCreate(BaseModel):
     organization_id: str
+    theme: str
     core_problem: str = Field(..., min_length=20)
     affected_stakeholders: List[str] = Field(
         ..., example=["Students", "Teachers"]
@@ -299,6 +343,7 @@ class ProblemStatementCreate(BaseModel):
 class ProblemStatementDB(BaseModel):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
     organization_id: str
+    theme: Optional[str] = None
     core_problem: str
     affected_stakeholders: List[str]
     evidence: Optional[List[ProblemEvidence]]
@@ -323,6 +368,8 @@ def create_problem_statement(payload: ProblemStatementCreate):
 
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
+    if payload.theme not in org.get("thematic_focus", []):
+        raise HTTPException(400, "Choose a theme from your organization profile")
 
     doc = payload.dict()
     doc["created_at"] = utc_now()
@@ -363,6 +410,8 @@ class ProblemRefinementResponse(BaseModel):
     identified_issues: List[ProblemIssue]
     refined_problem_statement: str
     suggested_root_causes: List[RootCauseSuggestion]
+    suggested_stakeholders: List[str] = []
+    evidence_suggestions: List[str] = []
     generated_at: datetime
 
 def refine_problem_statement(problem_text: str) -> Dict[str, Any]:
@@ -518,14 +567,22 @@ def ai_refine_problem_statement(problem_id: str):
     if not problem:
         raise HTTPException(status_code=404, detail="Problem statement not found")
 
-    analysis = refine_problem_statement(problem["core_problem"])
+    organization = require_organization(problem["organization_id"])
+    analysis = ai_generate(db, organization, "Condense this detailed problem into one precise, short, neutral sentence. Analyze causes tied to the actual details. Suggest stakeholders and evidence the user should gather; do not claim unverified evidence exists.", {
+        "theme": problem.get("theme"),
+        "problem_statement": problem["core_problem"],
+        "selected_stakeholders": problem.get("affected_stakeholders", []),
+        "provided_evidence": problem.get("evidence", []),
+    }, '{"refined_problem_statement":"one sentence", "clarity_score":1, "identified_issues":[{"issue_type":"specific label","description":"actionable explanation"}], "suggested_root_causes":[{"cause":"problem-specific cause","rationale":"why this follows from input"}], "suggested_stakeholders":["stakeholder and role"], "evidence_suggestions":["specific data to collect or verify"]}')
 
     response_doc = {
         "problem_statement_id": str(problem["_id"]),
-        "clarity_score": analysis["clarity_score"],
-        "identified_issues": analysis["identified_issues"],
-        "refined_problem_statement": analysis["refined_problem_statement"],
-        "suggested_root_causes": analysis["suggested_root_causes"],
+        "clarity_score": max(1, min(5, int(analysis.get("clarity_score", 3)))),
+        "identified_issues": analysis.get("identified_issues", []),
+        "refined_problem_statement": presentable_text(analysis.get("refined_problem_statement") or problem["core_problem"]),
+        "suggested_root_causes": analysis.get("suggested_root_causes", []),
+        "suggested_stakeholders": text_items(analysis.get("suggested_stakeholders", [])),
+        "evidence_suggestions": text_items(analysis.get("evidence_suggestions", [])),
         "generated_at": utc_now()
     }
 
@@ -617,13 +674,17 @@ def build_problem_tree_structure(
 def generate_mermaid_problem_tree(tree: Dict[str, Any]) -> str:
     lines = ["graph LR"]
 
-    for cause in tree["causes"]:
-        lines.append(f'{cause["id"]}["{cause["label"]}"] --> P1')
+    def clean(label):
+        readable = presentable_text(label).replace('"', "'").replace("[", "(").replace("]", ")").replace("\n", " ")
+        return readable if len(readable) <= 100 else readable[:97].rsplit(" ", 1)[0] + "…"
 
-    lines.append(f'P1["{tree["core_problem"]["label"]}"]')
+    for cause in tree["causes"]:
+        lines.append(f'{cause["id"]}["{clean(cause["label"])}"] --> P1')
+
+    lines.append(f'P1["{clean(tree["core_problem"]["label"])}"]')
 
     for effect in tree["effects"]:
-        lines.append(f'P1 --> {effect["id"]}["{effect["label"]}"]')
+        lines.append(f'P1 --> {effect["id"]}["{clean(effect["label"])}"]')
 
     return "\n".join(lines)
 
@@ -646,30 +707,36 @@ def mermaid_to_image_url(mermaid_code: str, format: str = "png") -> str:
         mermaid_code.encode("utf-8")
     ).decode("utf-8")
 
-    return f"https://mermaid.ink/img/{encoded}?type={format}"
+    return f"https://mermaid.ink/svg/{encoded}" if format == "svg" else f"https://mermaid.ink/img/{encoded}?type={format}"
 
 #  PROBLEM TREE GENERATION API 
 @app.post("/problem-tree", response_model=ProblemTreeResponse)
 def generate_problem_tree(payload: ProblemTreeRequest):
+    organization = require_organization(payload.organization_id)
 
     ecosystem_pattern = get_similar_program_patterns(payload.theme)
     district_challenges = get_district_challenges(payload.state, payload.district)
 
-    problem_tree = build_problem_tree_structure(
-        payload.refined_problem_statement,
-        payload.suggested_root_causes,
-        ecosystem_pattern
-    )
+    proposed = ai_generate(db, organization, "Build a causal problem tree for this exact problem. Causes must explain it, effects must follow from it. Avoid generic labels. Return 2 to 5 short causes and 2 to 4 short effects.", {
+        "theme": payload.theme,
+        "problem": payload.refined_problem_statement,
+        "root_cause_hypotheses": payload.suggested_root_causes,
+        "district_challenges": district_challenges,
+    }, '{"causes":["specific cause"], "effects":["specific consequence"], "validation_feedback":["one constructive note"]}')
+    causes = text_items(proposed.get("causes", []), 5) or [presentable_text(item["cause"]) for item in payload.suggested_root_causes]
+    effects = text_items(proposed.get("effects", []), 4)
+    problem_tree = {
+        "causes": [{"id": f"C{i+1}", "label": item} for i, item in enumerate(causes)],
+        "core_problem": {"id": "P1", "label": presentable_text(payload.refined_problem_statement)},
+        "effects": [{"id": f"E{i+1}", "label": item} for i, item in enumerate(effects)],
+    }
 
     mermaid_diagram = generate_mermaid_problem_tree(problem_tree)
     mermaid_preview_url = mermaid_to_live_url(mermaid_diagram)
     mermaid_png_url = mermaid_to_image_url(mermaid_diagram, "png")
     mermaid_svg_url = mermaid_to_image_url(mermaid_diagram, "svg")
 
-    validation_feedback = validate_problem_against_ecosystem(
-        payload.refined_problem_statement,
-        ecosystem_pattern
-    )
+    validation_feedback = text_items(proposed.get("validation_feedback", []))
 
     ai_suggestions = {
         "similar_program_pattern": ecosystem_pattern,
@@ -717,40 +784,38 @@ class StudentOutcomeResponse(BaseModel):
     timeline_preview_url: str
     timeline_png_url: str
     timeline_svg_url: str
+    milestones: List[Dict[str, Any]] = []
+    outcome_explanation: str = ""
+    outcome_statement: str = ""
+    baseline: float = 0
+    target: float = 0
+    timeline_months: int = 0
 
-def validate_smart_outcome(
-    outcome: str,
-    baseline: float,
-    target: float,
-    timeline: int
-):
+class SmartValidationRequest(BaseModel):
+    organization_id: str
+    theme: str
+    outcome_statement: str
+    baseline_value: float
+    target_value: float
+    timeline_months: int
 
-    feedback = []
-    score = 5
+def validate_outcome_for_organization(payload: SmartValidationRequest) -> Dict[str, Any]:
+    organization = require_organization(payload.organization_id)
+    if payload.theme not in organization.get("thematic_focus", []):
+        raise HTTPException(400, "Choose a theme from your organization profile")
+    saved_problem = problem_statements_collection.find_one(
+        {"organization_id": payload.organization_id, "theme": payload.theme},
+        {"core_problem": 1},
+        sort=[("created_at", -1)],
+    )
+    return validate_smart_outcome(
+        payload.outcome_statement, payload.baseline_value, payload.target_value,
+        payload.timeline_months, payload.theme, (saved_problem or {}).get("core_problem", ""),
+    )
 
-    if len(outcome.split()) < 8:
-        feedback.append("Outcome may not be sufficiently specific.")
-        score -= 1
-
-    if baseline >= target:
-        feedback.append("Target value must be greater than baseline.")
-        score -= 1
-
-    if timeline <= 0:
-        feedback.append("Timeline must be greater than zero months.")
-        score -= 1
-
-    measurable = any(word in outcome.lower() for word in ["percentage", "score", "proficiency", "fluency"])
-
-    if not measurable:
-        feedback.append("Outcome may not be clearly measurable.")
-        score -= 1
-
-    return {
-        "smart_score": max(score, 1),
-        "issues": feedback,
-        "is_valid": score >= 3
-    }
+@app.post("/student-outcomes/validate")
+def validate_student_outcome(payload: SmartValidationRequest):
+    return validate_outcome_for_organization(payload)
 
 def get_aligned_competencies(theme: str, grade_range: str):
     record = competency_frameworks_collection.find_one(
@@ -765,15 +830,16 @@ def get_policy_references():
         for p in policy_references_collection.find({}, {"_id": 0})
     ]
 
-def generate_outcome_timeline(outcome: str, timeline_months: int) -> str:
-
-    return f"""
-gantt
-    title Student Outcome Timeline
-    dateFormat  YYYY-MM-DD
-    section Outcome Achievement
-    Baseline to Target Progress :a1, 2025-01-01, {timeline_months * 30}d
-"""
+def generate_outcome_timeline(outcome: str, timeline_months: int, milestones: List[Dict[str, Any]]) -> str:
+    from datetime import timedelta
+    start = utc_now().date()
+    lines = ["gantt", "    title Student Outcome Plan", "    dateFormat YYYY-MM-DD", "    axisFormat %b %Y", "    section Milestones"]
+    for index, milestone in enumerate(milestones):
+        month = max(1, min(timeline_months, int(milestone.get("month", index + 1))))
+        date = start + timedelta(days=(month - 1) * 30)
+        label = presentable_text(milestone.get("title", "Review progress")).replace(":", " ").replace("\n", " ")[:65]
+        lines.append(f"    {label} :m{index}, {date.isoformat()}, 28d")
+    return "\n".join(lines)
 def mermaid_to_live_url(mermaid_code: str) -> str:
     payload = {
         "code": mermaid_code,
@@ -790,17 +856,24 @@ def mermaid_to_image_url(mermaid_code: str, format: str = "png") -> str:
         mermaid_code.encode("utf-8")
     ).decode("utf-8")
 
-    return f"https://mermaid.ink/img/{encoded}?type={format}"
+    return f"https://mermaid.ink/svg/{encoded}" if format == "svg" else f"https://mermaid.ink/img/{encoded}?type={format}"
 
 # STUDENT OUTCOME CREATION API
 @app.post("/student-outcomes", response_model=StudentOutcomeResponse)
 def create_student_outcome(payload: StudentOutcomeRequest):
+    organization = require_organization(payload.organization_id)
+    if payload.theme not in organization.get("thematic_focus", []):
+        raise HTTPException(400, "Choose a theme from your organization profile")
 
-    smart_validation = validate_smart_outcome(
-        payload.outcome_statement,
-        payload.baseline_value,
-        payload.target_value,
-        payload.timeline_months
+    smart_validation = validate_outcome_for_organization(
+        SmartValidationRequest(
+            organization_id=payload.organization_id,
+            theme=payload.theme,
+            outcome_statement=payload.outcome_statement,
+            baseline_value=payload.baseline_value,
+            target_value=payload.target_value,
+            timeline_months=payload.timeline_months,
+        )
     )
 
     aligned_competencies = get_aligned_competencies(
@@ -810,10 +883,11 @@ def create_student_outcome(payload: StudentOutcomeRequest):
 
     policy_refs = get_policy_references()
 
-    timeline_diagram = generate_outcome_timeline(
-        payload.outcome_statement,
-        payload.timeline_months
-    )
+    plan = ai_generate(db, organization, "Explain what success means for this student outcome and make a practical sequence of 4 to 6 distinct milestones. Include what will happen, what will be measured, and a month number within the user's timeline. Do not invent achieved progress.", payload.model_dump(), '{"outcome_explanation":"clear goal and who benefits", "milestones":[{"month":1,"title":"short milestone title","action":"specific activity","measure":"evidence or metric to check"}]}')
+    milestones = [item for item in plan.get("milestones", []) if isinstance(item, dict)][:6]
+    if not milestones:
+        raise HTTPException(502, "AI did not return a usable outcome plan. Please try again.")
+    timeline_diagram = generate_outcome_timeline(payload.outcome_statement, payload.timeline_months, milestones)
 
     # 👇 Visualization support
     timeline_preview_url = mermaid_to_live_url(timeline_diagram)
@@ -833,6 +907,8 @@ def create_student_outcome(payload: StudentOutcomeRequest):
         "smart_validation": smart_validation,
         "competencies": aligned_competencies,
         "policy_references": policy_refs,
+        "milestones": milestones,
+        "outcome_explanation": presentable_text(plan.get("outcome_explanation", "")),
         "created_at": datetime.now(timezone.utc)
     }
 
@@ -845,11 +921,18 @@ def create_student_outcome(payload: StudentOutcomeRequest):
         "outcome_timeline_diagram": timeline_diagram,
         "timeline_preview_url": timeline_preview_url,
         "timeline_png_url": timeline_png_url,
-        "timeline_svg_url": timeline_svg_url
+        "timeline_svg_url": timeline_svg_url,
+        "milestones": milestones,
+        "outcome_explanation": presentable_text(plan.get("outcome_explanation", "")),
+        "outcome_statement": payload.outcome_statement,
+        "baseline": payload.baseline_value,
+        "target": payload.target_value,
+        "timeline_months": payload.timeline_months,
     }
 
 # -------------------- Methodology Selector --------------------
 class MethodologyFilterRequest(BaseModel):
+    organization_id: str
     theme: str
     state: str
     scale_schools: int
@@ -857,6 +940,7 @@ class MethodologyFilterRequest(BaseModel):
 
 class MethodologyResponse(BaseModel):
     methodologies: List[Dict[str, Any]]
+    alternatives: List[Dict[str, Any]] = []
 
 def filter_methodologies(
     theme: str,
@@ -868,18 +952,18 @@ def filter_methodologies(
     results = []
 
     cursor = methodology_library_collection.find(
-        {"theme": theme},
+        {"theme": library_theme_query([theme])},
         {"_id": 0}
     )
 
     for m in cursor:
-        geo_match = state.lower() in m["geographies"] or "all" in m["geographies"]
+        geo_match = geography_matches(m, state)
 
         min_budget, max_budget = m["budget_range_lakhs"]
         budget_match = min_budget <= budget <= max_budget
 
         if geo_match and budget_match:
-            results.append(m)
+            results.append(methodology_for_display(m))
 
     return results
 
@@ -900,20 +984,46 @@ def generate_component_library(methodologies: List[Dict[str, Any]]):
     ]
 
 @app.get("/methodologies")
-def get_all_methodologies():
-
-    methodologies = list(
-        methodology_library_collection.find({}, {"_id": 0})
-    )
+def get_all_methodologies(organization_id: str, theme: Optional[str] = None):
+    organization = require_organization(organization_id)
+    if theme and theme not in organization.get("thematic_focus", []):
+        raise HTTPException(400, "Choose a theme from your organization profile")
+    focus = [theme] if theme else organization.get("thematic_focus", [])
+    methodologies = [methodology_for_display(item) for item in methodology_library_collection.find(
+        {"theme": library_theme_query(focus)}, {"_id": 0}
+    )]
 
     return {
         "count": len(methodologies),
         "methodologies": methodologies
     }
 
+@app.get("/organization/{org_id}/methodologies/saved")
+def get_saved_methodologies(org_id: str, theme: str):
+    require_organization(org_id)
+    saved = selected_methodologies_collection.find_one({"organization_id": org_id, "theme": theme}, sort=[("created_at", -1)])
+    return {"selected_methodology_ids": saved.get("selected_methodology_ids", []) if saved else [],
+            "custom_components": saved.get("custom_components", []) if saved else []}
+
+@app.get("/organization/{org_id}/methodologies/detail")
+def get_methodology_detail(org_id: str, name: str):
+    organization = require_organization(org_id)
+    method = methodology_library_collection.find_one({"name": name, "theme": library_theme_query(organization.get("thematic_focus", []))}, {"_id": 0})
+    if not method:
+        raise HTTPException(404, "Methodology not found for this organization")
+    focus = next((item for item in organization.get("thematic_focus", []) if method.get("theme") in library_theme_query([item])["$in"]), next(iter(organization.get("thematic_focus") or []), ""))
+    try:
+        details = ai_generate(db, organization, "Explain this methodology in plain language for a busy program designer. Summary: at most 35 words. Fit: at most 25 words and grounded in the saved problem and organization. Return one concrete implementation action for each catalog component, in the same order, with at most 16 words per action. Resources, risks, and measures: at most three short points each. Distinguish documented geography from the organization's location. Do not claim results without evidence or repeat organization statistics.", {"theme": focus, "methodology": method}, '{"summary":"one short overview", "implementation_steps":["short action in the same order as the methodology components"], "when_to_use":"short fit note", "resources_needed":["short resource"], "risks":["short practical limitation"], "success_measures":["short measure"]}')
+    except HTTPException:
+        details = {}
+    return {"name": name, **compact_methodology_detail(method, organization, details)}
+
 # METHODOLOGY SELECTION API
 @app.post("/methodologies", response_model=MethodologyResponse)
 def get_methodologies(payload: MethodologyFilterRequest):
+    organization = require_organization(payload.organization_id)
+    if payload.theme not in organization.get("thematic_focus", []):
+        raise HTTPException(400, "Choose a theme from your organization profile")
 
     methodologies = filter_methodologies(
         payload.theme,
@@ -923,6 +1033,16 @@ def get_methodologies(payload: MethodologyFilterRequest):
     )
 
     component_library = generate_component_library(methodologies)
+    alternatives = []
+    if not methodologies:
+        for method in methodology_library_collection.find({"theme": library_theme_query([payload.theme])}, {"_id": 0}):
+            reasons = []
+            if not geography_matches(method, payload.state):
+                reasons.append(f"Catalog experience is from {', '.join(method.get('geographies', []))}; check fit in {payload.state}.")
+            minimum, maximum = method.get("budget_range_lakhs", [0, 0])
+            if not minimum <= payload.budget_lakhs <= maximum:
+                reasons.append(f"Reference budget is ₹{minimum}–{maximum} lakh, compared with your ₹{payload.budget_lakhs} lakh input.")
+            alternatives.append({**methodology_for_display(method), "filter_note": " ".join(reasons)})
 
     return {
         "methodologies": [
@@ -931,20 +1051,26 @@ def get_methodologies(payload: MethodologyFilterRequest):
                 "available_components": component_library
             }
             for m in methodologies
-        ]
+        ],
+        "alternatives": alternatives,
     }
 
 class SelectMethodologyRequest(BaseModel):
     organization_id: str
+    theme: str
     selected_methodology_ids: List[str]
     custom_components: List[str]
 
 # METHODOLOGY SAVE SELECTION API
 @app.post("/methodologies/select")
 def save_selected_methodology(payload: SelectMethodologyRequest):
+    organization = require_organization(payload.organization_id)
+    if payload.theme not in organization.get("thematic_focus", []):
+        raise HTTPException(400, "Choose a theme from your organization profile")
 
     record = {
         "organization_id": payload.organization_id,
+        "theme": payload.theme,
         "selected_methodology_ids": payload.selected_methodology_ids,
         "custom_components": payload.custom_components,
         "created_at": datetime.utcnow()
@@ -974,40 +1100,15 @@ class TheoryOfChangeResponse(BaseModel):
     is_valid: bool
     logic_issues: List[str]
     ai_suggestions: List[str]
+    suggestion_cards: List[Dict[str, Any]] = []
+    ai_unavailable: bool = False
     mermaid_diagram: str
     mermaid_preview_url: str
     mermaid_png_url: str
     mermaid_svg_url: str
 
 def validate_if_then_logic(nodes: List[ToCNode], edges: List[ToCEdge]):
-
-    issues = []
-    node_map = {node.id: node for node in nodes}
-
-    required_flow = ["activity", "output", "outcome", "impact"]
-
-    # Map outgoing edges
-    flow_map = {}
-    for edge in edges:
-        flow_map.setdefault(edge.source, []).append(edge.target)
-
-    # Validate each connection
-    for edge in edges:
-        source_type = node_map[edge.source].type
-        target_type = node_map[edge.target].type
-
-        if required_flow.index(target_type) - required_flow.index(source_type) != 1:
-            issues.append(
-                f"Invalid logical jump from {source_type} to {target_type}: '{node_map[edge.source].label}' → '{node_map[edge.target].label}'"
-            )
-
-    # Check missing layers
-    present_layers = {node.type for node in nodes}
-    for layer in required_flow:
-        if layer not in present_layers:
-            issues.append(f"Missing '{layer}' level in Theory of Change.")
-
-    return issues
+    return validate_toc([node.model_dump() for node in nodes], [edge.model_dump() for edge in edges])
 
 def detect_logic_gaps(theme: str, nodes: List[ToCNode]):
 
@@ -1033,47 +1134,32 @@ def detect_logic_gaps(theme: str, nodes: List[ToCNode]):
 
     return suggestions
 
-def generate_toc_mermaid(nodes: List[ToCNode], edges: List[ToCEdge]):
-
-    lines = ["flowchart LR"]
-
-    for node in nodes:
-        label = (
-            node.label
-            .replace('"', "'")
-            .replace("[", "")
-            .replace("]", "")
-            .replace("\n", " ")
-        )
-
-        if node.type == "activity":
-            lines.append(f'{node.id}["{label}"]')
-        elif node.type == "output":
-            lines.append(f'{node.id}("{label}")')
-        elif node.type == "outcome":
-            lines.append(f'{node.id}(("{label}"))')
-        elif node.type == "impact":
-            lines.append(f'{node.id}((("{label}")))')
-        else:
-            lines.append(f'{node.id}["{label}"]')
-
-    for edge in edges:
-        lines.append(f"{edge.source} --> {edge.target}")
-
-    return "\n".join(lines)
+def generate_toc_mermaid(nodes: List[ToCNode], edges: List[ToCEdge], language: str = "en"):
+    return toc_mermaid([node.model_dump() for node in nodes], [edge.model_dump() for edge in edges], language)
 
 # THEORY OF CHANGE BUILDING API
 @app.post("/theory-of-change", response_model=TheoryOfChangeResponse)
-def build_theory_of_change(payload: TheoryOfChangeRequest):
+def build_theory_of_change(payload: TheoryOfChangeRequest, language: str = "en"):
+    organization = require_organization(payload.organization_id)
+    if payload.theme not in organization.get("thematic_focus", []):
+        raise HTTPException(400, "Choose a theme from your organization profile")
 
     logic_issues = validate_if_then_logic(payload.nodes, payload.edges)
-    ai_suggestions = detect_logic_gaps(payload.theme, payload.nodes)
+    ai_unavailable = False
+    try:
+        review = ai_generate(db, organization, "Review this theory of change against the organization's problem and outcomes. Give 2-4 distinct, useful improvement cards. Each title has at most 5 words; each action has at most 24 words. In related_node_ids list ONLY IDs already present in the input, never invent an ID for a proposed new node. Describe missing nodes in plain language instead. Distinguish structural errors from optional improvements. Do not invent evidence, outcomes, or targets. Suggestions are proposals and are not yet in the diagram.", {"theme": payload.theme, "nodes": [n.model_dump() for n in payload.nodes], "edges": [e.model_dump() for e in payload.edges], "structural_issues": logic_issues}, '{"suggestions":[{"title":"short improvement heading", "action":"one concrete change", "related_node_ids":["existing node ID"]}]}')
+    except HTTPException:
+        review = {}
+        ai_unavailable = True
+    cards = suggestion_cards(review, {node.id for node in payload.nodes})
+    ai_suggestions = [f"{card['title']}: {card['action']}" for card in cards]
 
     is_valid = len(logic_issues) == 0
 
     mermaid_diagram = generate_toc_mermaid(
         payload.nodes,
-        payload.edges
+        payload.edges,
+        language,
     )
 
     # 👇 Visualization support
@@ -1088,6 +1174,8 @@ def build_theory_of_change(payload: TheoryOfChangeRequest):
         "edges": [e.dict() for e in payload.edges],
         "logic_issues": logic_issues,
         "ai_suggestions": ai_suggestions,
+        "suggestion_cards": cards,
+        "ai_unavailable": ai_unavailable,
         "created_at": datetime.utcnow()
     }
 
@@ -1097,6 +1185,8 @@ def build_theory_of_change(payload: TheoryOfChangeRequest):
         "is_valid": is_valid,
         "logic_issues": logic_issues,
         "ai_suggestions": ai_suggestions,
+        "suggestion_cards": cards,
+        "ai_unavailable": ai_unavailable,
         "mermaid_diagram": mermaid_diagram,
         "mermaid_preview_url": mermaid_preview_url,
         "mermaid_png_url": mermaid_png_url,
@@ -1111,6 +1201,7 @@ class StakeholderSelectorRequest(BaseModel):
 class StakeholderSelectorResponse(BaseModel):
     available_stakeholders: List[Dict[str, Any]]
     recommended_stakeholders: List[str]
+    selected_stakeholders: List[str] = []
 
 def get_recommended_stakeholders(theme: str):
 
@@ -1124,26 +1215,46 @@ def get_recommended_stakeholders(theme: str):
 # STAKEHOLDER SELECTION API
 @app.post("/stakeholders/select", response_model=StakeholderSelectorResponse)
 def select_stakeholders(payload: StakeholderSelectorRequest):
+    organization = require_organization(payload.organization_id)
 
     all_stakeholders = list(
         stakeholder_master_collection.find({}, {"_id": 0})
     )
 
-    recommended = get_recommended_stakeholders(payload.theme)
+    problem = problem_statements_collection.find_one({"organization_id": payload.organization_id, "theme": payload.theme}, sort=[("created_at", -1)])
+    choices = [s for s in all_stakeholders if payload.theme in s.get("themes", [])]
+    if not choices:
+        choices = all_stakeholders
+    analysis = ai_generate(db, organization, "Select the stakeholders who can influence this organization's specific problem and student outcome. Use only stakeholder_id values from candidates.", {"theme": payload.theme, "problem": (problem or {}).get("core_problem", ""), "candidates": choices}, '{"recommended_stakeholder_ids":["exact candidate stakeholder_id"]}')
+    valid_ids = {s.get("stakeholder_id") for s in choices}
+    recommended = [s for s in text_items(analysis.get("recommended_stakeholder_ids", [])) if s in valid_ids]
 
-    record = {
-        "organization_id": payload.organization_id,
-        "theme": payload.theme,
-        "selected_stakeholders": recommended,
-        "created_at": datetime.utcnow()
-    }
-
-    organization_stakeholders_collection.insert_one(record)
+    saved = organization_stakeholders_collection.find_one({"organization_id": payload.organization_id, "theme": payload.theme})
 
     return {
-        "available_stakeholders": all_stakeholders,
-        "recommended_stakeholders": recommended
+        "available_stakeholders": choices,
+        "recommended_stakeholders": recommended,
+        "selected_stakeholders": saved.get("selected_stakeholders", []) if saved else []
     }
+
+class StakeholderSaveRequest(BaseModel):
+    theme: str
+    stakeholder_ids: List[str]
+
+@app.put("/organization/{org_id}/stakeholders")
+def save_stakeholders(org_id: str, payload: StakeholderSaveRequest):
+    organization = require_organization(org_id)
+    if payload.theme not in organization.get("thematic_focus", []):
+        raise HTTPException(400, "Choose a theme from your organization profile")
+    valid_ids = {item["stakeholder_id"] for item in stakeholder_master_collection.find({}, {"stakeholder_id": 1})}
+    if any(item not in valid_ids for item in payload.stakeholder_ids):
+        raise HTTPException(400, "Choose stakeholders from the available list")
+    organization_stakeholders_collection.update_one(
+        {"organization_id": org_id, "theme": payload.theme},
+        {"$set": {"selected_stakeholders": payload.stakeholder_ids, "updated_at": utc_now()}},
+        upsert=True,
+    )
+    return {"selected_stakeholders": payload.stakeholder_ids}
 
 # --------------------  Practice Change Definition Tool --------------------
 class PracticeChangeRequest(BaseModel):
@@ -1154,7 +1265,7 @@ class PracticeChangeRequest(BaseModel):
     desired_practices: List[str]
 
 class PracticeChangeResponse(BaseModel):
-    ai_suggestions: Dict[str, List[str]]
+    ai_suggestions: Dict[str, Any]
     validation_feedback: List[str]
 
 def get_ai_practice_suggestions(stakeholder_id: str, theme: str):
@@ -1200,11 +1311,11 @@ def validate_practice_changes(current: List[str], desired: List[str]):
 # PRACTICE CHANGE DEFINITION API
 @app.post("/practice-change", response_model=PracticeChangeResponse)
 def define_practice_change(payload: PracticeChangeRequest):
+    organization = require_organization(payload.organization_id)
 
-    ai_suggestions = get_ai_practice_suggestions(
-        payload.stakeholder_id,
-        payload.theme
-    )
+    reference = get_ai_practice_suggestions(payload.stakeholder_id, payload.theme)
+    proposal = ai_generate(db, organization, "Create a concise practice-change map for this stakeholder and the organization's saved problem. Key idea: 6-13 plain words that capture the shift. Return 2-4 additional current practices as hypotheses to CHECK, never unsupported facts; each gets a 2-5 word title and one observable explanation under 18 words. Return 3-5 additional desired practices with 2-5 word titles and one concrete action under 18 words. First step: one practical pilot action under 18 words. Keep suggestions distinct, grounded in the user's inputs, and avoid invented evidence or unnecessary statistics.", {"theme": payload.theme, "stakeholder": payload.stakeholder_id, "current_practices": payload.current_practices, "desired_practices": payload.desired_practices, "reference": reference}, '{"key_idea":"short practice shift", "current_cards":[{"title":"short heading", "summary":"possible current practice to verify"}], "desired_cards":[{"title":"short heading", "summary":"concrete desired practice"}], "first_step":"first pilot action"}')
+    ai_suggestions = normalize_practice_suggestions(proposal, payload.desired_practices)
 
     validation_feedback = validate_practice_changes(
         payload.current_practices,
@@ -1296,16 +1407,38 @@ def generate_practice_indicators(theme: str, practice_changes: List[Dict[str, An
 # AUTO INDICATOR GENERATION API
 @app.post("/indicators/auto-generate", response_model=IndicatorGenerationResponse)
 def auto_generate_indicators(payload: IndicatorGenerationRequest):
-
-    outcome_indicators = generate_outcome_indicators(
-        payload.theme,
-        payload.student_outcomes
+    organization = require_organization(payload.organization_id)
+    if payload.theme not in organization.get("thematic_focus", []):
+        raise HTTPException(400, "Choose a theme from your organization profile")
+    items = indicator_items(payload.student_outcomes, payload.practice_changes)
+    if not items:
+        raise HTTPException(400, "Add an outcome or practice change before generating indicators")
+    proposal = ai_generate(
+        db, organization,
+        "Create exactly one distinct, observable, measurable indicator with a unit for each input item. "
+        "Return the same short ID for each item; do not repeat the input text as a JSON key. "
+        "Keep indicators in the same order as the items. Avoid generic or recycled metrics and do not invent measured results.",
+        {"theme": payload.theme, "items": items},
+        '{"indicators":[{"id":"O1 or P1", "indicator":"specific measure with unit"}]}',
     )
+    generated = read_indicators(proposal, items)
+    for item in items:
+        if item["id"] in generated:
+            continue
+        # A model can omit an item in a long response. Request only that item again.
+        single = ai_generate(
+            db, organization,
+            "Create one observable, measurable indicator with a unit for this exact outcome or stakeholder practice. "
+            "Return only a short, specific indicator; do not invent a measured result.",
+            {"theme": payload.theme, "item": item},
+            '{"indicator":"specific measure with unit"}',
+        )
+        indicator = presentable_text(single.get("indicator"))
+        if not indicator:
+            raise HTTPException(502, "AI could not generate a measure for one input. Please try again.")
+        generated[item["id"]] = indicator
 
-    practice_indicators = generate_practice_indicators(
-        payload.theme,
-        payload.practice_changes
-    )
+    outcome_indicators, practice_indicators = indicators_by_input(items, generated)
 
     record = {
         "organization_id": payload.organization_id,
@@ -1327,6 +1460,7 @@ class IndicatorTarget(BaseModel):
     indicator_name: str
     baseline_value: float
     target_value: float
+    current_value: Optional[float] = None
     start_date: datetime
     end_date: datetime
 
@@ -1384,6 +1518,7 @@ def validate_indicator_target(indicator: IndicatorTarget):
     response_model=BaselineTargetResponse
 )
 def build_baseline_target(payload: BaselineTargetRequest):
+    require_organization(payload.organization_id)
 
     validations = []
 
@@ -1397,6 +1532,8 @@ def build_baseline_target(payload: BaselineTargetRequest):
             "indicator_name": indicator.indicator_name,
             "baseline_value": indicator.baseline_value,
             "target_value": indicator.target_value,
+            "current_value": indicator.current_value,
+            "progress_percentage": round(max(0, min(100, (indicator.current_value - indicator.baseline_value) / (indicator.target_value - indicator.baseline_value) * 100)), 1) if indicator.current_value is not None and indicator.target_value > indicator.baseline_value else 0,
             "start_date": indicator.start_date,
             "end_date": indicator.end_date,
             "status": validation.status,
@@ -1412,10 +1549,10 @@ def build_baseline_target(payload: BaselineTargetRequest):
 SECTION_REQUIREMENTS = {
     "organization_profile": {
         "weight": 10,
-        "required_fields": ["organization_id", "theme", "geography", "scale"]
+        "required_fields": ["organization_id", "theme", "geography"]
     },
     "problem_definition": {
-        "weight": 15,
+        "weight": 10,
         "required_fields": ["core_problem", "affected_group"]
     },
     "problem_tree": {
@@ -1423,21 +1560,21 @@ SECTION_REQUIREMENTS = {
         "required_fields": ["root_causes", "core_problem", "effects"]
     },
     "outcomes": {
-        "weight": 20,
+        "weight": 15,
         "required_fields": ["smart_outcomes"]
     },
     "methodology": {
-        "weight": 15,
-        "required_fields": ["interventions"]
+        "weight": 10,
+        "required_fields": ["selected"]
     },
     "theory_of_change": {
         "weight": 15,
         "required_fields": ["activities", "outputs", "outcomes", "impact"]
     },
-    "measurement": {
-        "weight": 10,
-        "required_fields": ["indicators", "targets"]
-    }
+    "stakeholders": {"weight": 5, "required_fields": []},
+    "practice_changes": {"weight": 5, "required_fields": []},
+    "indicators": {"weight": 10, "required_fields": ["outcome_indicators"]},
+    "indicator_baselines": {"weight": 5, "required_fields": []}
 }
 
 class LFACompletenessRequest(BaseModel):
@@ -1464,12 +1601,8 @@ def calculate_lfa_completeness(lfa_snapshot: Dict[str, Any]):
             continue
 
         # Check required fields
-        present_fields = [
-            field for field in rules["required_fields"]
-            if field in section_data and section_data[field]
-        ]
-
-        completion_ratio = len(present_fields) / len(rules["required_fields"])
+        present_fields = [field for field in rules["required_fields"] if isinstance(section_data, dict) and section_data.get(field)]
+        completion_ratio = len(present_fields) / len(rules["required_fields"]) if rules["required_fields"] else 1
         section_score = round(rules["weight"] * completion_ratio, 2)
 
         total_score += section_score
@@ -1497,6 +1630,7 @@ def calculate_lfa_completeness(lfa_snapshot: Dict[str, Any]):
 # LFA COMPLETENESS SCORE API
 @app.post("/lfa/completeness-score")
 def get_lfa_completeness(payload: LFACompletenessRequest):
+    require_snapshot_owner(payload.organization_id, payload.lfa_snapshot)
 
     result = calculate_lfa_completeness(payload.lfa_snapshot)
 
@@ -1554,6 +1688,7 @@ def analyze_outcome_quality(outcomes: List[str]):
         if issues:
             feedback.append({
                 "area": "Student Outcomes",
+                "section_key": "outcomes",
                 "issue": outcome,
                 "problems": issues,
                 "suggestion": "Rewrite outcome using a measurable baseline, target, and timeframe"
@@ -1568,6 +1703,7 @@ def analyze_stakeholder_alignment(stakeholders, outcomes):
     if not stakeholders:
         feedback.append({
             "area": "Stakeholders",
+            "section_key": "stakeholders",
             "issue": "No stakeholders linked to outcomes",
             "suggestion": "Map at least one stakeholder responsible for each outcome"
         })
@@ -1576,6 +1712,7 @@ def analyze_stakeholder_alignment(stakeholders, outcomes):
     if outcomes and len(stakeholders) < len(outcomes):
         feedback.append({
             "area": "Stakeholder Coverage",
+            "section_key": "stakeholders",
             "issue": "Fewer stakeholders than outcomes",
             "suggestion": "Ensure accountability by mapping stakeholders to each outcome"
         })
@@ -1590,6 +1727,7 @@ def analyze_indicator_quality(indicators):
         if "survey" in indicator.lower() or "perception" in indicator.lower():
             feedback.append({
                 "area": "Indicators",
+                "section_key": "indicators",
                 "issue": indicator,
                 "problem": "Indicator is perception-based",
                 "suggestion": "Prefer observable or performance-based indicators"
@@ -1607,6 +1745,7 @@ def analyze_toc_logic(toc):
         if step not in toc or not toc[step]:
             feedback.append({
                 "area": "Theory of Change",
+                "section_key": "theory_of_change",
                 "issue": f"Missing {step}",
                 "suggestion": f"Define clear {step} to maintain logical flow"
             })
@@ -1615,6 +1754,7 @@ def analyze_toc_logic(toc):
         if len(toc["activities"]) > len(toc["outcomes"]) * 3:
             feedback.append({
                 "area": "Theory of Change",
+                "section_key": "theory_of_change",
                 "issue": "Too many activities for defined outcomes",
                 "suggestion": "Reduce activities or clarify outcome pathways"
             })
@@ -1632,6 +1772,7 @@ def analyze_problem_intervention_alignment(problem, interventions):
             if not any("infrastructure" in i.lower() for i in interventions):
                 feedback.append({
                     "area": "Intervention Alignment",
+                    "section_key": "methodology",
                     "issue": "Problem–intervention mismatch",
                     "suggestion": "Selected interventions do not address the stated core problem"
                 })
@@ -1639,32 +1780,32 @@ def analyze_problem_intervention_alignment(problem, interventions):
     return feedback
 
 def generate_design_quality_feedback(lfa_snapshot):
-
     feedback = []
-
+    completion = calculate_lfa_completeness(lfa_snapshot)
+    for section in completion["section_breakdown"]:
+        if section["status"] != "complete":
+            feedback.append({"area": section["section"].replace("_", " ").title(), "section_key": section["section"],
+                             "issue": "This part of the design is incomplete",
+                             "suggestion": "Add " + ", ".join(section.get("missing_fields", []) or ["the required details"])})
     outcomes = lfa_snapshot.get("outcomes", {}).get("smart_outcomes", [])
-    stakeholders = lfa_snapshot.get("stakeholders", [])
-    indicators = lfa_snapshot.get("measurement", {}).get("indicators", [])
-    toc = lfa_snapshot.get("theory_of_change", {})
-    problem = lfa_snapshot.get("problem_definition", {}).get("core_problem", "")
-    interventions = lfa_snapshot.get("methodology", {}).get("interventions", [])
-
-    feedback.extend(analyze_outcome_quality(outcomes))
-    feedback.extend(analyze_stakeholder_alignment(stakeholders, outcomes))
-    feedback.extend(analyze_indicator_quality(indicators))
-    feedback.extend(analyze_toc_logic(toc))
-    feedback.extend(analyze_problem_intervention_alignment(problem, interventions))
-
-    quality_score = max(0, 100 - len(feedback) * 8)
-
-    return {
-        "quality_score": quality_score,
-        "feedback_items": feedback
-    }
+    if isinstance(outcomes, list):
+        feedback.extend(analyze_outcome_quality(outcomes))
+    if lfa_snapshot.get("problem_definition", {}).get("core_problem") and not lfa_snapshot.get("problem_tree"):
+        feedback.append({"area": "Problem logic", "section_key": "problem_tree", "issue": "No causes or effects are linked to the problem", "suggestion": "Build a problem tree from the refined statement"})
+    if lfa_snapshot.get("indicators") and not lfa_snapshot.get("indicator_baselines"):
+        feedback.append({"area": "Measurement", "section_key": "indicator_baselines", "issue": "Indicators have no saved baseline and target", "suggestion": "Record baseline, target, and dates for each indicator"})
+    toc = lfa_snapshot.get("theory_of_change") or {}
+    if toc.get("nodes"):
+        for issue in validate_toc(toc.get("nodes", []), toc.get("edges", []))[:4]:
+            feedback.append({"area": "Theory of Change", "section_key": "theory_of_change", "issue": issue,
+                             "suggestion": "Edit the affected steps or connections, then validate the diagram again."})
+    quality_score = max(0, round(completion["completion_percentage"] - 5 * max(0, len(feedback) - len(completion["missing_sections"]))))
+    return {"quality_score": quality_score, "feedback_items": feedback}
 
 # DESIGN QUALITY FEEDBACK API
 @app.post("/lfa/design-quality-feedback")
 def get_design_quality_feedback(payload: DesignQualityRequest):
+    require_snapshot_owner(payload.organization_id, payload.lfa_snapshot)
 
     result = generate_design_quality_feedback(payload.lfa_snapshot)
 
@@ -1678,6 +1819,22 @@ def get_design_quality_feedback(payload: DesignQualityRequest):
     design_quality_feedback_collection.insert_one(record)
 
     return result
+
+@app.post("/organization/{org_id}/design-coach")
+def design_coach(org_id: str, payload: DesignQualityRequest):
+    organization = require_snapshot_owner(org_id, payload.lfa_snapshot)
+    if payload.organization_id != org_id:
+        raise HTTPException(400, "Organization mismatch")
+    assessment = calculate_lfa_completeness(payload.lfa_snapshot)
+    next_section = next((part["section"] for part in assessment["section_breakdown"] if part["status"] != "complete"), "review")
+    advice = ai_generate(db, organization, "Act as a program design coach. Review this organization's current design and the next incomplete section. Give one concrete next action and explain why it advances their stated goal. Use saved references when helpful. Never invent finished work or evidence.", {
+        "next_section": next_section,
+        "completeness": assessment["completion_percentage"],
+        "snapshot": payload.lfa_snapshot,
+    }, '{"headline":"short helpful title", "advice":"clear practical guidance", "next_action":"one task the user can do now", "evidence_note":"what evidence should be checked, if relevant"}')
+    return {"section": next_section, "headline": presentable_text(advice.get("headline", "Next step")),
+            "advice": presentable_text(advice.get("advice", "")), "next_action": presentable_text(advice.get("next_action", "")),
+            "evidence_note": presentable_text(advice.get("evidence_note", ""))}
 
 # -------------------- COMMON LFA TEMPLATE ENGINE --------------------
 class LFATemplate(BaseModel):
@@ -1698,26 +1855,53 @@ class LFATemplate(BaseModel):
 def list_lfa_templates(
     theme: Optional[str] = None,
     system_level: Optional[str] = None,
-    geography_type: Optional[str] = None
+    geography_type: Optional[str] = None,
+    organization_id: Optional[str] = None
 ):
 
-    query = {"is_public": True}
-
+    organization = require_organization(organization_id) if organization_id else None
+    focus_areas = organization.get("thematic_focus", []) if organization else None
     if theme:
-        query["theme"] = theme
-    if system_level:
-        query["system_level"] = system_level
-    if geography_type:
-        query["geography_type"] = geography_type
-
-    templates = list(
-        lfa_templates_collection.find(query, {"_id": 0})
+        if focus_areas is not None and canonical_theme(theme) not in {canonical_theme(item) for item in focus_areas}:
+            raise HTTPException(400, "This theme is not in your organization profile")
+    query = {"is_public": True}
+    if focus_areas is not None:
+        query["theme"] = library_theme_query(focus_areas)
+    elif theme:
+        query["theme"] = library_theme_query([canonical_theme(theme)])
+    records = list(lfa_templates_collection.find(query, {"_id": 0}))
+    records.extend(organization_templates_collection.find(query, {"_id": 0}))
+    templates = available_templates(
+        records, focus_areas=focus_areas, theme=theme,
+        system_level=system_level, geography_type=geography_type,
     )
 
     return {
         "count": len(templates),
         "templates": templates
     }
+
+@app.get("/organization/{org_id}/templates/saved")
+def get_saved_templates(org_id: str, theme: Optional[str] = None):
+    require_organization(org_id)
+    templates = list(organization_templates_collection.find({"created_by": org_id, **({"theme": theme} if theme else {})}, {"_id": 0}))
+    return {"count": len(templates), "templates": templates}
+
+@app.get("/organization/{org_id}/templates/detail")
+def get_template_detail(org_id: str, template_id: str):
+    organization = require_organization(org_id)
+    template = organization_templates_collection.find_one({"template_id": template_id, "created_by": org_id}, {"_id": 0})
+    if not template:
+        template = lfa_templates_collection.find_one({"template_id": template_id, "is_public": True}, {"_id": 0})
+    if not template:
+        template = organization_templates_collection.find_one({"template_id": template_id, "is_public": True}, {"_id": 0})
+    if not template:
+        template = next((item for item in starter_templates() if item["template_id"] == template_id), None)
+    if not template:
+        raise HTTPException(404, "Template not found")
+    if template.get("created_by") != org_id and canonical_theme(template.get("theme", "")) not in organization.get("thematic_focus", []):
+        raise HTTPException(404, "Template not found for this organization")
+    return template_detail(template, organization)
 
 class ForkTemplateRequest(BaseModel):
     organization_id: str
@@ -1727,18 +1911,30 @@ class ForkTemplateRequest(BaseModel):
 # LFA TEMPLATE FORKING API
 @app.post("/lfa/templates/fork")
 def fork_lfa_template(payload: ForkTemplateRequest):
+    organization = require_organization(payload.organization_id)
 
     base_template = lfa_templates_collection.find_one(
-        {"template_id": payload.template_id},
+        {"template_id": payload.template_id, "is_public": True},
         {"_id": 0}
     )
+    if not base_template:
+        base_template = organization_templates_collection.find_one(
+            {"template_id": payload.template_id, "is_public": True}, {"_id": 0}
+        )
+    if not base_template:
+        base_template = next((item for item in starter_templates() if item["template_id"] == payload.template_id), None)
 
     if not base_template:
         raise HTTPException(status_code=404, detail="Template not found")
+    if canonical_theme(base_template.get("theme", "")) not in organization.get("thematic_focus", []):
+        raise HTTPException(status_code=400, detail="This template does not match your organization focus")
+    if not payload.new_name.strip():
+        raise HTTPException(status_code=400, detail="Give the saved template a name")
 
     forked_template = base_template.copy()
-    forked_template["template_id"] = f"{payload.organization_id}_{int(datetime.now(timezone.utc).timestamp())}"
-    forked_template["name"] = payload.new_name
+    forked_template["template_id"] = f"{payload.organization_id}_{uuid.uuid4().hex}"
+    forked_template["name"] = payload.new_name.strip()
+    forked_template["theme"] = canonical_theme(base_template.get("theme", ""))
     forked_template["created_by"] = payload.organization_id
     forked_template["is_public"] = False
     forked_template["created_at"] = datetime.utcnow()
@@ -1763,10 +1959,10 @@ def save_custom_template(template: LFATemplate):
 
 # LFA TEMPLATE SHARE TO MARKETPLACE API
 @app.post("/lfa/templates/share/{template_id}")
-def share_template(template_id: str):
+def share_template(template_id: str, request: Request):
 
     result = organization_templates_collection.update_one(
-        {"template_id": template_id},
+        {"template_id": template_id, "created_by": request.state.user["organization_id"]},
         {"$set": {"is_public": True}}
     )
 
@@ -1966,12 +2162,13 @@ def handle_export(export_type, lfa_snapshot):
 
 # EXPORT API
 @app.post("/export")
-def export_lfa(payload: ExportRequest):
+def export_lfa(payload: ExportRequest, language: str = Query("en")):
 
     if payload.export_type not in EXPORT_TYPES:
         raise HTTPException(status_code=400, detail="Invalid export type")
 
-    file_path = handle_export(payload.export_type, payload.lfa_snapshot)
+    organization = require_snapshot_owner(payload.organization_id, payload.lfa_snapshot)
+    file_path = create_export(payload.export_type, payload.lfa_snapshot, organization, language)
 
     export_jobs_collection.insert_one({
         "organization_id": payload.organization_id,
@@ -1987,37 +2184,49 @@ def export_lfa(payload: ExportRequest):
     )
 
 # -------------------- Multi Lingual Support--------------------
-translator = Translator()
+TRANSLATION_ID_FIELDS = {
+    "_id", "id", "key", "organization_id", "problem_statement_id", "stakeholder_id",
+    "template_id", "theme", "section", "section_key", "status", "type",
+    "catalog_name", "selected_methodology_ids", "related_node_ids", "source", "target",
+    "organization_name", "thematic_focus", "maturity_level", "state", "district", "block", "role",
+    "mermaid_diagram", "outcome_timeline_diagram", "mermaid_preview_url", "mermaid_png_url", "mermaid_svg_url",
+    "timeline_preview_url", "timeline_png_url", "timeline_svg_url",
+    "created_at", "updated_at", "generated_at",
+}
 
-def translate_object(obj: Any, target_lang: str = "en") -> Any:
+
+async def translate_object(obj: Any, translator: Translator, target_lang: str = "en", field: str = "") -> Any:
     """
     Recursively translate all strings in dict, list, or str.
     """
     if isinstance(obj, str):
-        if target_lang == "en":
+        if target_lang == "en" or field in TRANSLATION_ID_FIELDS or field.endswith("_id") or field.endswith("_url"):
             return obj
         try:
-            return translator.translate(obj, dest=target_lang).text
+            return (await translator.translate(obj, dest=target_lang)).text
         except Exception:
             return obj
     elif isinstance(obj, dict):
-        return {k: translate_object(v, target_lang) for k, v in obj.items()}
+        return {k: await translate_object(v, translator, target_lang, k) for k, v in obj.items()}
     elif isinstance(obj, list):
-        return [translate_object(i, target_lang) for i in obj]
+        return [await translate_object(i, translator, target_lang, field) for i in obj]
     else:
         return obj
 
-def translate_response(response_obj: Any, language: str = "en") -> Any:
+async def translate_response(response_obj: Any, language: str = "en") -> Any:
     """
     Translate all strings in the response object to the target language
     """
     if language == "en":
         return response_obj
-    return translate_object(response_obj, language)
+    async with Translator() as translator:
+        return await translate_object(response_obj, translator, language)
 
 # Translation Middleware 
 @app.middleware("http")
 async def translate_middleware(request: Request, call_next):
+    if request.url.path.startswith("/auth/"):
+        return await call_next(request)
     # 1️⃣ Capture the 'language' query parameter (default: English)
     language = request.query_params.get("language", "en")
     
@@ -2033,7 +2242,7 @@ async def translate_middleware(request: Request, call_next):
                 data = json.loads(raw)
             except json.JSONDecodeError:
                 return response
-            translated = translate_response(data, language)
+            translated = await translate_response(data, language)
             return JSONResponse(content=translated, status_code=response.status_code)
     
     # 4️⃣ For non-JSON responses, return as-is
