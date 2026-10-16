@@ -10,7 +10,8 @@ import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { useLanguage } from "@/components/language-provider"
 import { useAppStore } from "@/lib/store"
-import { stakeholderApi, practiceApi } from "@/lib/api"
+import { PracticeSuggestionBoard } from "@/components/practice-suggestion-board"
+import { stakeholderApi, practiceApi, type PracticeChangeResponse } from "@/lib/api"
 import { toast } from "sonner"
 import {
   Users,
@@ -26,7 +27,6 @@ import {
   Briefcase,
   Heart,
   Plus,
-  Lightbulb,
 } from "lucide-react"
 
 const stakeholderIcons: Record<string, any> = {
@@ -40,7 +40,7 @@ const stakeholderIcons: Record<string, any> = {
 
 export default function StakeholdersPage() {
   const { language, t } = useLanguage()
-  const { currentOrganization, updateLFASnapshot } = useAppStore()
+  const { currentOrganization, activeTheme, updateLFASnapshot } = useAppStore()
   const [loading, setLoading] = useState(false)
   const [practiceLoading, setPracticeLoading] = useState(false)
   const [stakeholders, setStakeholders] = useState<any[]>([])
@@ -52,22 +52,22 @@ export default function StakeholdersPage() {
   const [selectedForPractice, setSelectedForPractice] = useState<string | null>(null)
   const [currentPractices, setCurrentPractices] = useState<string[]>([""])
   const [desiredPractices, setDesiredPractices] = useState<string[]>([""])
-  const [practiceResult, setPracticeResult] = useState<any>(null)
+  const [practiceResult, setPracticeResult] = useState<PracticeChangeResponse | null>(null)
 
   const handleFetchStakeholders = async () => {
     setLoading(true)
     try {
       const result = await stakeholderApi.select(
         {
-          organization_id: currentOrganization?._id || "demo-org",
-          theme: currentOrganization?.thematic_focus[0] || "fln",
+          organization_id: currentOrganization!._id,
+          theme: activeTheme || currentOrganization!.thematic_focus[0],
         },
         language,
       )
 
       setStakeholders(result.available_stakeholders)
       setRecommended(result.recommended_stakeholders)
-      setSelectedStakeholders(result.recommended_stakeholders)
+      setSelectedStakeholders(result.selected_stakeholders?.length ? result.selected_stakeholders : result.recommended_stakeholders)
 
       updateLFASnapshot("stakeholders", result.recommended_stakeholders)
       toast.success(language === "en" ? "Stakeholders loaded!" : "हितधारक लोड हो गए!")
@@ -80,6 +80,15 @@ export default function StakeholdersPage() {
 
   const toggleStakeholder = (id: string) => {
     setSelectedStakeholders((prev) => (prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]))
+  }
+
+  const saveStakeholders = async () => {
+    if (!currentOrganization) return
+    try {
+      await stakeholderApi.saveSelection(currentOrganization._id, activeTheme || currentOrganization.thematic_focus[0], selectedStakeholders, language)
+      updateLFASnapshot("stakeholders", selectedStakeholders)
+      setActiveTab("practice")
+    } catch (error: any) { toast.error(error.message) }
   }
 
   const handleDefinePractice = async () => {
@@ -101,8 +110,8 @@ export default function StakeholdersPage() {
     try {
       const result = await practiceApi.define(
         {
-          organization_id: currentOrganization?._id || "demo-org",
-          theme: currentOrganization?.thematic_focus[0] || "fln",
+          organization_id: currentOrganization!._id,
+          theme: activeTheme || currentOrganization!.thematic_focus[0],
           stakeholder_id: selectedForPractice,
           current_practices: filledCurrent,
           desired_practices: filledDesired,
@@ -112,6 +121,7 @@ export default function StakeholdersPage() {
 
       setPracticeResult(result)
       updateLFASnapshot("practice_changes", {
+        ...(useAppStore.getState().lfaSnapshot as any).practice_changes,
         [selectedForPractice]: {
           current: filledCurrent,
           desired: filledDesired,
@@ -128,6 +138,7 @@ export default function StakeholdersPage() {
   }
 
   const addPractice = (type: "current" | "desired") => {
+    setPracticeResult(null)
     if (type === "current") {
       setCurrentPractices([...currentPractices, ""])
     } else {
@@ -136,6 +147,7 @@ export default function StakeholdersPage() {
   }
 
   const updatePractice = (type: "current" | "desired", index: number, value: string) => {
+    setPracticeResult(null)
     if (type === "current") {
       const updated = [...currentPractices]
       updated[index] = value
@@ -292,10 +304,7 @@ export default function StakeholdersPage() {
                         })}
                         <Button
                           className="w-full mt-4"
-                          onClick={() => {
-                            updateLFASnapshot("stakeholders", selectedStakeholders)
-                            setActiveTab("practice")
-                          }}
+                          onClick={saveStakeholders}
                         >
                           {language === "en" ? "Continue to Practice Changes" : "अभ्यास परिवर्तनों पर जाएं"}
                           <ArrowRight className="ml-2 h-4 w-4" />
@@ -329,7 +338,7 @@ export default function StakeholdersPage() {
                       return (
                         <div
                           key={id}
-                          onClick={() => setSelectedForPractice(id)}
+                          onClick={() => { setSelectedForPractice(id); setPracticeResult(null); setCurrentPractices([""]); setDesiredPractices([""]) }}
                           className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-all ${
                             isActive ? "bg-primary/10 border-primary" : "hover:bg-muted/50"
                           }`}
@@ -413,68 +422,11 @@ export default function StakeholdersPage() {
                       )}
                     </Button>
 
-                    {/* AI Suggestions */}
-                    {practiceResult && (
-                      <Card className="bg-primary/5 border-primary/20">
-                        <CardHeader>
-                          <CardTitle className="flex items-center gap-2 text-base">
-                            <Lightbulb className="h-5 w-5 text-primary" />
-                            {language === "en" ? "AI Suggestions" : "AI सुझाव"}
-                          </CardTitle>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                          {practiceResult.ai_suggestions?.suggested_current?.length > 0 && (
-                            <div>
-                              <p className="text-sm font-medium mb-2">
-                                {language === "en" ? "Additional current practices:" : "अतिरिक्त वर्तमान अभ्यास:"}
-                              </p>
-                              <ul className="text-sm space-y-1">
-                                {practiceResult.ai_suggestions.suggested_current.map((s: string, i: number) => (
-                                  <li key={i} className="flex items-start gap-2">
-                                    <span className="text-primary">•</span>
-                                    {s}
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                          {practiceResult.ai_suggestions?.suggested_desired?.length > 0 && (
-                            <div>
-                              <p className="text-sm font-medium mb-2">
-                                {language === "en" ? "Additional desired practices:" : "अतिरिक्त वांछित अभ्यास:"}
-                              </p>
-                              <ul className="text-sm space-y-1">
-                                {practiceResult.ai_suggestions.suggested_desired.map((s: string, i: number) => (
-                                  <li key={i} className="flex items-start gap-2">
-                                    <span className="text-primary">•</span>
-                                    {s}
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                          {practiceResult.validation_feedback?.length > 0 && (
-                            <div>
-                              <p className="text-sm font-medium mb-2">
-                                {language === "en" ? "Feedback:" : "प्रतिक्रिया:"}
-                              </p>
-                              <ul className="text-sm space-y-1">
-                                {practiceResult.validation_feedback.map((f: string, i: number) => (
-                                  <li key={i} className="flex items-start gap-2">
-                                    <CheckCircle2 className="h-4 w-4 text-success shrink-0 mt-0.5" />
-                                    {f}
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                        </CardContent>
-                      </Card>
-                    )}
                   </CardContent>
                 </Card>
               )}
             </div>
+            {practiceResult && <PracticeSuggestionBoard result={practiceResult} language={language} />}
           </TabsContent>
         </Tabs>
       </div>

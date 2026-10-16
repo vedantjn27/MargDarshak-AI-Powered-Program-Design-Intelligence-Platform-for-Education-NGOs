@@ -19,19 +19,26 @@ import {
 } from "@/components/ui/dialog"
 import { useLanguage } from "@/components/language-provider"
 import { useAppStore } from "@/lib/store"
+import { TemplateDetailDialog, type TemplateDetail } from "@/components/template-detail-dialog"
+import { CatalogCover } from "@/components/catalog-cover"
 import { lfaApi, type LFATemplate } from "@/lib/api"
 import { toast } from "sonner"
 import { BookTemplate, Loader2, Star, GitFork, Share2, MapPin, Building, Filter, Search } from "lucide-react"
 
 export default function TemplatesPage() {
   const { language, t } = useLanguage()
-  const { currentOrganization } = useAppStore()
+  const { currentOrganization, activeTheme } = useAppStore()
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState("")
   const [forkLoading, setForkLoading] = useState<string | null>(null)
   const [shareLoading, setShareLoading] = useState<string | null>(null)
   const [ratingLoading, setRatingLoading] = useState<string | null>(null)
 
   const [templates, setTemplates] = useState<LFATemplate[]>([])
+  const [savedTemplates, setSavedTemplates] = useState<LFATemplate[]>([])
+  const [detail, setDetail] = useState<TemplateDetail | null>(null)
+  const [detailTemplate, setDetailTemplate] = useState<LFATemplate | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
   const [filteredTemplates, setFilteredTemplates] = useState<LFATemplate[]>([])
   const [searchQuery, setSearchQuery] = useState("")
   const [filters, setFilters] = useState({
@@ -54,8 +61,31 @@ export default function TemplatesPage() {
   const [hoverRating, setHoverRating] = useState(0)
 
   useEffect(() => {
-    fetchTemplates()
-  }, [])
+    if (currentOrganization?._id) { fetchTemplates(); fetchSaved() }
+  }, [currentOrganization?._id, activeTheme, language])
+
+  const fetchSaved = async () => {
+    if (!currentOrganization) return
+    try { setSavedTemplates((await lfaApi.getSavedTemplates(currentOrganization._id, activeTheme || currentOrganization.thematic_focus[0], language)).templates) }
+    catch (error: any) { toast.error(error.message) }
+  }
+
+  const openDetail = async (template: LFATemplate) => {
+    if (!currentOrganization) return
+    setDetailTemplate(template)
+    setDetail({ name: template.name })
+    setDetailLoading(true)
+    try { setDetail(await lfaApi.getTemplateDetail(currentOrganization._id, template.template_id, language)) }
+    catch (error: any) { toast.error(error.message); setDetail(null); setDetailTemplate(null) }
+    finally { setDetailLoading(false) }
+  }
+
+  const openFork = (template: LFATemplate) => {
+    setDetail(null)
+    setDetailTemplate(null)
+    setNewName(`${template.name} (Copy)`)
+    setForkDialog({ open: true, template })
+  }
 
   useEffect(() => {
     let result = templates
@@ -66,10 +96,10 @@ export default function TemplatesPage() {
           t.description.toLowerCase().includes(searchQuery.toLowerCase()),
       )
     }
-    if (filters.theme) {
+    if (filters.theme && filters.theme !== "all") {
       result = result.filter((t) => t.theme === filters.theme)
     }
-    if (filters.system_level) {
+    if (filters.system_level && filters.system_level !== "all") {
       result = result.filter((t) => t.system_level === filters.system_level)
     }
     if (filters.geography_type) {
@@ -79,22 +109,27 @@ export default function TemplatesPage() {
   }, [templates, searchQuery, filters])
 
   const fetchTemplates = async () => {
+    if (!currentOrganization) return
     setLoading(true)
+    setLoadError("")
     try {
       const result = await lfaApi.getTemplates(
         filters.theme || filters.system_level || filters.geography_type
           ? {
-              theme: filters.theme || undefined,
-              system_level: filters.system_level || undefined,
+              theme: filters.theme && filters.theme !== "all" ? filters.theme : undefined,
+              system_level: filters.system_level && filters.system_level !== "all" ? filters.system_level : undefined,
               geography_type: filters.geography_type || undefined,
             }
           : undefined,
         language,
+        currentOrganization._id,
       )
       setTemplates(result.templates)
       setFilteredTemplates(result.templates)
     } catch (error: any) {
-      toast.error(error.message)
+      setTemplates([])
+      setFilteredTemplates([])
+      setLoadError(error.message || (language === "hi" ? "टेम्पलेट लोड नहीं हो सके।" : "Templates could not be loaded."))
     } finally {
       setLoading(false)
     }
@@ -107,7 +142,7 @@ export default function TemplatesPage() {
     try {
       await lfaApi.forkTemplate(
         {
-          organization_id: currentOrganization?._id || "demo-org",
+          organization_id: currentOrganization!._id,
           template_id: forkDialog.template.template_id,
           new_name: newName,
         },
@@ -117,6 +152,7 @@ export default function TemplatesPage() {
       setForkDialog({ open: false, template: null })
       setNewName("")
       fetchTemplates()
+      fetchSaved()
     } catch (error: any) {
       toast.error(error.message)
     } finally {
@@ -129,6 +165,8 @@ export default function TemplatesPage() {
     try {
       await lfaApi.shareTemplate(templateId, language)
       toast.success(language === "en" ? "Template shared!" : "टेम्पलेट साझा किया गया!")
+      fetchSaved()
+      fetchTemplates()
     } catch (error: any) {
       toast.error(error.message)
     } finally {
@@ -144,7 +182,7 @@ export default function TemplatesPage() {
       await lfaApi.rateTemplate(
         {
           template_id: ratingDialog.template.template_id,
-          organization_id: currentOrganization?._id || "demo-org",
+          organization_id: currentOrganization!._id,
           rating: selectedRating,
         },
         language,
@@ -211,6 +249,12 @@ export default function TemplatesPage() {
 
         {/* Search and Filters */}
         <Card>
+          <CardHeader><CardTitle>{language === "hi" ? "आपके सहेजे गए टेम्पलेट" : "Your saved templates"}</CardTitle><CardDescription>{language === "hi" ? "आपके संगठन के लिए फोर्क किए गए टेम्पलेट" : "Forked for this organization"}</CardDescription></CardHeader>
+          <CardContent className="grid gap-3 md:grid-cols-2">{savedTemplates.length ? savedTemplates.map((template) => <div key={template.template_id} className="group overflow-hidden rounded-lg border"><CatalogCover title={template.name} theme={template.theme} category={language === "hi" ? "सहेजा गया टेम्पलेट" : "Saved template"} /><div className="p-4"><p className="mb-4 text-sm text-muted-foreground">{template.description}</p><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => openDetail(template)}>{language === "hi" ? "विवरण देखें" : "View details"}</Button>{!template.is_public && <Button variant="outline" disabled={shareLoading === template.template_id} onClick={() => handleShare(template.template_id)}><Share2 className="mr-2 h-4 w-4" />{language === "hi" ? "साझा करें" : "Share"}</Button>}</div></div></div>) : <p className="text-sm text-muted-foreground">{language === "hi" ? "अभी कोई टेम्पलेट सहेजा नहीं गया है।" : "Fork a template to save it here."}</p>}</CardContent>
+        </Card>
+
+        {/* Search and Filters */}
+        <Card>
           <CardContent className="p-4">
             <div className="flex flex-col md:flex-row gap-4">
               <div className="relative flex-1">
@@ -229,9 +273,7 @@ export default function TemplatesPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">{language === "en" ? "All Themes" : "सभी विषय"}</SelectItem>
-                    <SelectItem value="fln">FLN</SelectItem>
-                    <SelectItem value="stem">STEM</SelectItem>
-                    <SelectItem value="life_skills">Life Skills</SelectItem>
+                    {currentOrganization?.thematic_focus.map((theme) => <SelectItem key={theme} value={theme}>{theme.replaceAll("_", " ")}</SelectItem>)}
                   </SelectContent>
                 </Select>
                 <Select value={filters.system_level} onValueChange={(v) => setFilters({ ...filters, system_level: v })}>
@@ -260,6 +302,14 @@ export default function TemplatesPage() {
           <div className="flex items-center justify-center py-12">
             <Loader2 className="h-8 w-8 animate-spin text-primary" />
           </div>
+        ) : loadError ? (
+          <Card className="border-destructive/50">
+            <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
+              <h3 className="text-lg font-semibold">{language === "hi" ? "टेम्पलेट लोड नहीं हो सके" : "Could not load templates"}</h3>
+              <p className="text-sm text-muted-foreground">{loadError}</p>
+              <Button variant="outline" onClick={fetchTemplates}>{language === "hi" ? "फिर से कोशिश करें" : "Try again"}</Button>
+            </CardContent>
+          </Card>
         ) : filteredTemplates.length === 0 ? (
           <Card className="border-dashed">
             <CardContent className="flex flex-col items-center justify-center py-12">
@@ -277,11 +327,11 @@ export default function TemplatesPage() {
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {filteredTemplates.map((template) => (
-              <Card key={template.template_id} className="flex flex-col">
+              <Card key={template.template_id} className="group flex flex-col overflow-hidden p-0">
+                <CatalogCover title={template.name} theme={template.theme} category={language === "hi" ? "कार्यक्रम टेम्पलेट" : "Program template"} />
                 <CardHeader>
                   <div className="flex items-start justify-between">
                     <div>
-                      <CardTitle className="text-lg">{template.name}</CardTitle>
                       <CardDescription className="mt-1">{template.description}</CardDescription>
                     </div>
                     {template.is_public && (
@@ -313,6 +363,7 @@ export default function TemplatesPage() {
                   </div>
                 </CardContent>
                 <CardFooter className="flex gap-2 border-t pt-4">
+                  <Button variant="secondary" size="sm" onClick={() => openDetail(template)}>{language === "hi" ? "विवरण" : "Details"}</Button>
                   <Dialog
                     open={forkDialog.open && forkDialog.template?.template_id === template.template_id}
                     onOpenChange={(open) => {
@@ -324,7 +375,7 @@ export default function TemplatesPage() {
                         variant="outline"
                         size="sm"
                         className="flex-1 bg-transparent"
-                        onClick={() => setForkDialog({ open: true, template })}
+                        onClick={() => openFork(template)}
                       >
                         <GitFork className="h-4 w-4 mr-1" />
                         {language === "en" ? "Fork" : "फोर्क"}
@@ -361,19 +412,6 @@ export default function TemplatesPage() {
                       </DialogFooter>
                     </DialogContent>
                   </Dialog>
-
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleShare(template.template_id)}
-                    disabled={shareLoading === template.template_id}
-                  >
-                    {shareLoading === template.template_id ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Share2 className="h-4 w-4" />
-                    )}
-                  </Button>
 
                   <Dialog
                     open={ratingDialog.open && ratingDialog.template?.template_id === template.template_id}
@@ -435,6 +473,14 @@ export default function TemplatesPage() {
             ))}
           </div>
         )}
+        <TemplateDetailDialog
+          detail={detail}
+          template={detailTemplate}
+          loading={detailLoading}
+          language={language}
+          onClose={() => { setDetail(null); setDetailTemplate(null) }}
+          onFork={detailTemplate?.is_public ? () => openFork(detailTemplate) : undefined}
+        />
       </div>
     </DashboardLayout>
   )

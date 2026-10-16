@@ -2,13 +2,17 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import { usePathname } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { useLanguage } from "@/components/language-provider"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 import { Separator } from "@/components/ui/separator"
+import { workflow } from "@/lib/workflow"
+import { authApi } from "@/lib/api"
+import { useAppStore } from "@/lib/store"
+import { toast } from "sonner"
 import {
   LayoutDashboard,
   Building2,
@@ -28,63 +32,69 @@ import {
   LogOut,
 } from "lucide-react"
 
-const navItems = [
-  { key: "nav.dashboard", href: "/dashboard", icon: LayoutDashboard },
-  { key: "nav.organization", href: "/dashboard/organization", icon: Building2 },
-  { key: "nav.problem", href: "/dashboard/problem", icon: AlertTriangle },
-  { key: "nav.outcomes", href: "/dashboard/outcomes", icon: Target },
-  { key: "nav.methodology", href: "/dashboard/methodology", icon: Workflow },
-  { key: "nav.toc", href: "/dashboard/theory-of-change", icon: Network },
-  { key: "nav.stakeholders", href: "/dashboard/stakeholders", icon: Users },
-  { key: "nav.indicators", href: "/dashboard/indicators", icon: BarChart3 },
-  { key: "nav.quality", href: "/dashboard/quality", icon: CheckCircle2 },
-  { key: "nav.export", href: "/dashboard/export", icon: Download },
-  { key: "nav.templates", href: "/dashboard/templates", icon: FileTemplate },
-  { key: "nav.settings", href: "/dashboard/settings", icon: Settings },
-]
+const pageIcons: Record<string, typeof LayoutDashboard> = {
+  "/dashboard/problem": AlertTriangle,
+  "/dashboard/outcomes": Target,
+  "/dashboard/methodology": Workflow,
+  "/dashboard/theory-of-change": Network,
+  "/dashboard/stakeholders": Users,
+  "/dashboard/indicators": BarChart3,
+  "/dashboard/quality": CheckCircle2,
+  "/dashboard/export": Download,
+  "/dashboard/templates": FileTemplate,
+}
 
 interface SidebarNavProps {
   className?: string
+  onNavigate?: () => void
 }
 
-export function SidebarNav({ className }: SidebarNavProps) {
+export function SidebarNav({ className, onNavigate }: SidebarNavProps) {
   const pathname = usePathname()
-  const { t, language } = useLanguage()
+  const router = useRouter()
+  const { language } = useLanguage()
+
+  const signOut = async () => {
+    try {
+      await authApi.logout()
+      useAppStore.getState().resetState()
+      onNavigate?.()
+      router.replace("/auth")
+    } catch {
+      toast.error(language === "hi" ? "साइन आउट नहीं हो सका। फिर प्रयास करें।" : "Could not sign out. Please try again.")
+    }
+  }
+
+  const navLink = (href: string, label: string, Icon: typeof LayoutDashboard) => {
+    const active = pathname === href
+    return <Link key={href} href={href} aria-current={active ? "page" : undefined} onClick={onNavigate}>
+      <Button variant={active ? "secondary" : "ghost"} className={cn("h-10 w-full justify-start gap-3", active && "bg-primary/10 text-primary hover:bg-primary/15")}>
+        <Icon className="h-4 w-4 shrink-0" />
+        <span className="truncate">{label}</span>
+        {active && <ChevronRight className="ml-auto h-4 w-4" />}
+      </Button>
+    </Link>
+  }
 
   return (
     <nav className={cn("flex flex-col gap-1", className)}>
-      {navItems.map((item) => {
-        const Icon = item.icon
-        const isActive = pathname === item.href
-
-        return (
-          <Link key={item.href} href={item.href}>
-            <Button
-              variant={isActive ? "secondary" : "ghost"}
-              className={cn(
-                "w-full justify-start gap-3 h-11",
-                isActive && "bg-primary/10 text-primary hover:bg-primary/15",
-              )}
-            >
-              <Icon className="h-4 w-4" />
-              <span>{t(item.key)}</span>
-              {isActive && <ChevronRight className="ml-auto h-4 w-4" />}
-            </Button>
-          </Link>
-        )
-      })}
+      {navLink("/dashboard", language === "hi" ? "कार्यक्रम कार्यस्थल" : "Program workspace", LayoutDashboard)}
+      {workflow.map((stage, index) => <div key={stage.en} className="mt-4 space-y-1">
+        <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{index + 1}. {language === "hi" ? stage.hi : stage.en}</p>
+        {stage.pages.map((page) => navLink(page.href, language === "hi" ? page.hi : page.en, pageIcons[page.href]))}
+      </div>)}
 
       <Separator className="my-4" />
+      {navLink("/dashboard/organization", language === "hi" ? "संगठन पंजीकरण" : "Organization", Building2)}
+      {navLink("/dashboard/settings", language === "hi" ? "सेटिंग्स" : "Settings", Settings)}
 
-      <Link href="/">
-        <Button
+        <Button type="button" onClick={signOut}
           variant="ghost"
           className="w-full justify-start gap-3 h-11 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
         >
           <LogOut className="h-4 w-4" />
-          <span>{language === "en" ? "Exit Dashboard" : "डैशबोर्ड से बाहर निकलें"}</span>
+          <span>{language === "en" ? "Sign out" : "साइन आउट"}</span>
         </Button>
-      </Link>
     </nav>
   )
 }
@@ -109,7 +119,7 @@ export function MobileSidebar() {
           <span className="font-semibold">{language === "en" ? "MargDarshak" : "मार्गदर्शक"}</span>
         </div>
         <ScrollArea className="h-[calc(100vh-4rem)] px-3 py-4">
-          <SidebarNav />
+          <SidebarNav onNavigate={() => setOpen(false)} />
         </ScrollArea>
       </SheetContent>
     </Sheet>

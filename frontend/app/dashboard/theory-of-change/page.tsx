@@ -1,15 +1,18 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { MermaidDiagram } from "@/components/mermaid-diagram"
+import { TocSuggestionBoard } from "@/components/toc-suggestion-board"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { useLanguage } from "@/components/language-provider"
 import { useAppStore } from "@/lib/store"
+import { presentableText } from "@/lib/presentation"
 import { tocApi } from "@/lib/api"
 import { toast } from "sonner"
 import {
@@ -18,10 +21,10 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
-  Lightbulb,
   Plus,
   X,
   ArrowDown,
+  ArrowRight,
   Zap,
   FileOutput,
   Target,
@@ -82,16 +85,19 @@ function NodeSection({
       <CardContent className="space-y-3">
         {sectionNodes.map((node) => (
           <div key={node.id} className="flex items-start gap-2">
-            <Textarea
-              value={node.label}
-              onChange={(e) => onUpdateLabel(node.id, e.target.value)}
-              placeholder={
-                language === "en"
-                  ? `Enter ${type}... (You can type full sentences here)`
-                  : `${type === "activity" ? "गतिविधि" : type === "output" ? "आउटपुट" : type === "outcome" ? "परिणाम" : "प्रभाव"} दर्ज करें... (आप यहां पूर्ण वाक्य टाइप कर सकते हैं)`
-              }
-              className="flex-1 min-h-[80px] resize-y"
-            />
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <span className="inline-flex rounded-md bg-muted px-2 py-0.5 text-xs font-bold tracking-wide text-primary">{node.id}</span>
+              <Textarea
+                value={node.label}
+                onChange={(e) => onUpdateLabel(node.id, e.target.value)}
+                placeholder={
+                  language === "en"
+                    ? `Enter ${type}... (You can type full sentences here)`
+                    : `${type === "activity" ? "गतिविधि" : type === "output" ? "आउटपुट" : type === "outcome" ? "परिणाम" : "प्रभाव"} दर्ज करें... (आप यहां पूर्ण वाक्य टाइप कर सकते हैं)`
+                }
+                className="min-h-[80px] resize-y"
+              />
+            </div>
             {sectionNodes.length > 1 && (
               <Button variant="ghost" size="icon" onClick={() => onRemoveNode(node.id)} className="mt-1">
                 <X className="h-4 w-4" />
@@ -106,7 +112,7 @@ function NodeSection({
 
 export default function TheoryOfChangePage() {
   const { language, t } = useLanguage()
-  const { currentOrganization, theoryOfChange, setTheoryOfChange, updateLFASnapshot } = useAppStore()
+  const { currentOrganization, activeTheme, lfaSnapshot, theoryOfChange, setTheoryOfChange, updateLFASnapshot } = useAppStore()
   const [loading, setLoading] = useState(false)
   const [activeTab, setActiveTab] = useState("build")
 
@@ -122,34 +128,59 @@ export default function TheoryOfChangePage() {
     { source: "O1", target: "OC1" },
     { source: "OC1", target: "I1" },
   ])
+  const [edgeSource, setEdgeSource] = useState("A1")
+  const [edgeTarget, setEdgeTarget] = useState("O1")
+
+  useEffect(() => {
+    if (lfaSnapshot.theory_of_change?.nodes?.length) {
+      setNodes(lfaSnapshot.theory_of_change.nodes as ToCNode[])
+      setEdges(lfaSnapshot.theory_of_change.edges || [])
+    }
+  }, [lfaSnapshot.theory_of_change])
 
   const addNode = (type: ToCNode["type"]) => {
     const prefix = type === "activity" ? "A" : type === "output" ? "O" : type === "outcome" ? "OC" : "I"
-    const existingCount = nodes.filter((n) => n.type === type).length
-    const newId = `${prefix}${existingCount + 1}`
+    const existingNumbers = nodes.filter((n) => n.type === type).map((n) => Number(n.id.slice(prefix.length)) || 0)
+    const newId = `${prefix}${Math.max(0, ...existingNumbers) + 1}`
     setNodes([...nodes, { id: newId, type, label: "" }])
+    setTheoryOfChange(null)
   }
 
   const removeNode = (id: string) => {
     setNodes(nodes.filter((n) => n.id !== id))
     setEdges(edges.filter((e) => e.source !== id && e.target !== id))
+    setTheoryOfChange(null)
   }
 
   const updateNodeLabel = (id: string, label: string) => {
     setNodes((prevNodes) => prevNodes.map((n) => (n.id === id ? { ...n, label } : n)))
+    setTheoryOfChange(null)
   }
 
   const addEdge = (source: string, target: string) => {
+    if (!nodes.some((node) => node.id === source) || !nodes.some((node) => node.id === target)) {
+      toast.error(language === "hi" ? "दो मान्य चरण चुनें।" : "Choose two existing steps.")
+      return
+    }
+    if (source === target) {
+      toast.error(language === "hi" ? "किसी चरण को स्वयं से नहीं जोड़ सकते।" : "A step cannot connect to itself.")
+      return
+    }
     if (!edges.find((e) => e.source === source && e.target === target)) {
       setEdges([...edges, { source, target }])
+      setTheoryOfChange(null)
     }
   }
 
+  const removeEdge = (source: string, target: string) => {
+    setEdges(edges.filter((edge) => edge.source !== source || edge.target !== target))
+    setTheoryOfChange(null)
+  }
+
   const handleSubmit = async () => {
-    const filledNodes = nodes.filter((n) => n.label.trim())
-    if (filledNodes.length < 4) {
+    if (nodes.some((node) => !node.label.trim())) {
       toast.error(
-        language === "en" ? "Please add at least one item for each level" : "कृपया प्रत्येक स्तर के लिए कम से कम एक आइटम जोड़ें",
+        language === "en" ? "Describe every step before checking the diagram." : "डायग्राम जाँचने से पहले हर चरण का विवरण दें।",
       )
       return
     }
@@ -157,24 +188,26 @@ export default function TheoryOfChangePage() {
     setLoading(true)
     try {
       const payload = {
-        organization_id: currentOrganization?._id || "demo-org",
-        theme: currentOrganization?.thematic_focus[0] || "fln",
-        nodes: filledNodes.map((n) => ({ id: n.id, type: n.type, label: n.label })),
-        edges: edges.filter(
-          (e) => filledNodes.find((n) => n.id === e.source) && filledNodes.find((n) => n.id === e.target),
-        ),
+        organization_id: currentOrganization!._id,
+        theme: activeTheme || currentOrganization!.thematic_focus[0],
+        nodes: nodes.map((n) => ({ id: n.id, type: n.type, label: n.label })),
+        edges,
       }
 
       const result = await tocApi.build(payload, language)
       setTheoryOfChange(result)
       updateLFASnapshot("theory_of_change", {
-        activities: filledNodes.filter((n) => n.type === "activity").map((n) => n.label),
-        outputs: filledNodes.filter((n) => n.type === "output").map((n) => n.label),
-        outcomes: filledNodes.filter((n) => n.type === "outcome").map((n) => n.label),
-        impact: filledNodes.filter((n) => n.type === "impact").map((n) => n.label),
+        activities: nodes.filter((n) => n.type === "activity").map((n) => n.label),
+        outputs: nodes.filter((n) => n.type === "output").map((n) => n.label),
+        outcomes: nodes.filter((n) => n.type === "outcome").map((n) => n.label),
+        impact: nodes.filter((n) => n.type === "impact").map((n) => n.label),
+        nodes: payload.nodes,
+        edges: payload.edges,
+        is_valid: result.is_valid,
       })
 
-      toast.success(language === "en" ? "Theory of Change validated!" : "परिवर्तन का सिद्धांत मान्य!")
+      if (result.is_valid) toast.success(language === "en" ? "Structure checked: all steps connect." : "संरचना जाँची गई: सभी चरण जुड़े हैं।")
+      else toast.warning(language === "en" ? "Review the connection issues shown in the preview." : "पूर्वावलोकन में दिखाए गए संबंधों की समीक्षा करें।")
       setActiveTab("preview")
     } catch (error: any) {
       toast.error(error.message)
@@ -279,6 +312,37 @@ export default function TheoryOfChangePage() {
                 onRemoveNode={removeNode}
                 onUpdateLabel={updateNodeLabel}
               />
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-lg"><Network className="h-5 w-5 text-primary" />{language === "hi" ? "चरणों को जोड़ें" : "Connect the steps"}</CardTitle>
+                  <p className="text-sm text-muted-foreground">
+                    {language === "hi" ? "तीर आपके कारण-प्रभाव संबंध दिखाते हैं। एक चरण से कई शाखाएँ जुड़ सकती हैं।" : "Arrows show how change happens. One step can lead to several branches."}
+                  </p>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                    <Select value={edgeSource} onValueChange={setEdgeSource}>
+                      <SelectTrigger className="w-full sm:max-w-[220px]" aria-label={language === "hi" ? "शुरुआती चरण" : "From step"}><SelectValue placeholder={language === "hi" ? "किस चरण से" : "From step"} /></SelectTrigger>
+                      <SelectContent>{nodes.map((node) => <SelectItem key={node.id} value={node.id}>{node.id} · {language === "hi" ? node.type === "activity" ? "गतिविधि" : node.type === "output" ? "आउटपुट" : node.type === "outcome" ? "परिणाम" : "प्रभाव" : node.type}</SelectItem>)}</SelectContent>
+                    </Select>
+                    <ArrowRight className="hidden h-4 w-4 shrink-0 text-primary sm:block" aria-hidden="true" />
+                    <Select value={edgeTarget} onValueChange={setEdgeTarget}>
+                      <SelectTrigger className="w-full sm:max-w-[220px]" aria-label={language === "hi" ? "अगला चरण" : "To step"}><SelectValue placeholder={language === "hi" ? "किस चरण तक" : "To step"} /></SelectTrigger>
+                      <SelectContent>{nodes.map((node) => <SelectItem key={node.id} value={node.id}>{node.id} · {language === "hi" ? node.type === "activity" ? "गतिविधि" : node.type === "output" ? "आउटपुट" : node.type === "outcome" ? "परिणाम" : "प्रभाव" : node.type}</SelectItem>)}</SelectContent>
+                    </Select>
+                    <Button onClick={() => addEdge(edgeSource, edgeTarget)} className="sm:ml-auto"><Plus className="mr-2 h-4 w-4" />{language === "hi" ? "संबंध जोड़ें" : "Add connection"}</Button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {edges.map((edge) => (
+                      <div key={`${edge.source}-${edge.target}`} className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-sm" title={`${nodes.find((node) => node.id === edge.source)?.label || edge.source} → ${nodes.find((node) => node.id === edge.target)?.label || edge.target}`}>
+                        <span className="font-bold text-primary">{edge.source}</span><ArrowRight className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" /><span className="font-bold text-primary">{edge.target}</span>
+                        <button type="button" className="ml-1 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={`${language === "hi" ? "संबंध हटाएँ" : "Remove connection"} ${edge.source} ${edge.target}`} onClick={() => removeEdge(edge.source, edge.target)}><X className="h-3.5 w-3.5" /></button>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
             </div>
 
             <div className="flex justify-end">
@@ -310,25 +374,26 @@ export default function TheoryOfChangePage() {
                       ) : (
                         <AlertCircle className="h-5 w-5 text-warning" />
                       )}
-                      {language === "en" ? "Logic Validation" : "तर्क मान्यता"}
+                      {language === "en" ? "Connection check" : "संबंध जाँच"}
                       <Badge variant={theoryOfChange.is_valid ? "default" : "secondary"}>
                         {theoryOfChange.is_valid
                           ? language === "en"
-                            ? "Valid"
-                            : "मान्य"
+                            ? "Structure valid"
+                            : "संरचना सही है"
                           : language === "en"
                             ? "Needs Review"
                             : "समीक्षा आवश्यक"}
                       </Badge>
                     </CardTitle>
                   </CardHeader>
+                  {theoryOfChange.is_valid && <CardContent className="text-sm text-muted-foreground">{language === "hi" ? "सभी चरण गतिविधि से प्रभाव तक जुड़े हैं। प्रभाव की मान्यताओं को वास्तविक प्रमाण से जाँचें।" : "Every step connects from an activity to impact. Verify the causal assumptions with evidence."}</CardContent>}
                   {theoryOfChange.logic_issues.length > 0 && (
                     <CardContent>
                       <div className="space-y-2">
                         {theoryOfChange.logic_issues.map((issue, index) => (
                           <div key={index} className="flex items-start gap-2 text-sm p-3 bg-warning/10 rounded-lg">
                             <AlertCircle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
-                            <span>{issue}</span>
+                            <span>{presentableText(issue, language)}</span>
                           </div>
                         ))}
                       </div>
@@ -337,26 +402,7 @@ export default function TheoryOfChangePage() {
                 </Card>
 
                 {/* AI Suggestions */}
-                {theoryOfChange.ai_suggestions.length > 0 && (
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2">
-                        <Lightbulb className="h-5 w-5 text-primary" />
-                        {language === "en" ? "AI Suggestions" : "AI सुझाव"}
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-2">
-                        {theoryOfChange.ai_suggestions.map((suggestion, index) => (
-                          <div key={index} className="flex items-start gap-2 text-sm p-3 bg-primary/10 rounded-lg">
-                            <Lightbulb className="h-4 w-4 text-primary shrink-0 mt-0.5" />
-                            <span>{suggestion}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
+                <TocSuggestionBoard result={theoryOfChange} language={language} onEdit={() => setActiveTab("build")} />
 
                 {/* Diagram */}
                 <MermaidDiagram
@@ -365,6 +411,8 @@ export default function TheoryOfChangePage() {
                   previewUrl={theoryOfChange.mermaid_preview_url}
                   pngUrl={theoryOfChange.mermaid_png_url}
                   svgUrl={theoryOfChange.mermaid_svg_url}
+                  widePreview
+                  language={language}
                 />
               </>
             )}

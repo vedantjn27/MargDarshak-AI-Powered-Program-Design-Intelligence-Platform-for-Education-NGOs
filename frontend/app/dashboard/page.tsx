@@ -1,335 +1,153 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
+import Link from "next/link"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { StatCard } from "@/components/stat-card"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { Progress } from "@/components/ui/progress"
 import { useLanguage } from "@/components/language-provider"
 import { useAppStore } from "@/lib/store"
-import {
-  BarChart3,
-  Target,
-  Users,
-  FileText,
-  ArrowRight,
-  CheckCircle2,
-  AlertCircle,
-  TrendingUp,
-  Building2,
-} from "lucide-react"
-import Link from "next/link"
-import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, XAxis, YAxis } from "recharts"
-import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart"
+import { lfaApi, coachApi } from "@/lib/api"
+import { ArrowRight, Building2, CheckCircle2, FileText, Target, Users } from "lucide-react"
+import { workflow, workflowPages, hasPageData } from "@/lib/workflow"
+import { ProgramMap } from "@/components/program-map"
+import { CatalogCover } from "@/components/catalog-cover"
+import { presentableText } from "@/lib/presentation"
 
-const progressData = [
-  { name: "Organization", completed: 100, key: "organization_profile" },
-  { name: "Problem", completed: 85, key: "problem_definition" },
-  { name: "Outcomes", completed: 60, key: "outcomes" },
-  { name: "Methodology", completed: 40, key: "methodology" },
-  { name: "ToC", completed: 30, key: "theory_of_change" },
-  { name: "Indicators", completed: 20, key: "measurement" },
-]
-
-const qualityData = [
-  { name: "Clarity", value: 85, fill: "var(--color-chart-1)" },
-  { name: "Alignment", value: 72, fill: "var(--color-chart-2)" },
-  { name: "Measurability", value: 68, fill: "var(--color-chart-4)" },
-  { name: "Logic", value: 90, fill: "var(--color-chart-3)" },
-]
-
-const workflowSteps = [
-  {
-    step: 1,
-    title: "Organization Setup",
-    titleHi: "संगठन सेटअप",
-    href: "/dashboard/organization",
-    icon: Building2,
-    status: "complete",
-  },
-  {
-    step: 2,
-    title: "Problem Definition",
-    titleHi: "समस्या परिभाषा",
-    href: "/dashboard/problem",
-    icon: AlertCircle,
-    status: "in-progress",
-  },
-  {
-    step: 3,
-    title: "Student Outcomes",
-    titleHi: "छात्र परिणाम",
-    href: "/dashboard/outcomes",
-    icon: Target,
-    status: "pending",
-  },
-  {
-    step: 4,
-    title: "Theory of Change",
-    titleHi: "परिवर्तन का सिद्धांत",
-    href: "/dashboard/theory-of-change",
-    icon: TrendingUp,
-    status: "pending",
-  },
-  {
-    step: 5,
-    title: "Stakeholders",
-    titleHi: "हितधारक",
-    href: "/dashboard/stakeholders",
-    icon: Users,
-    status: "pending",
-  },
-  { step: 6, title: "Indicators", titleHi: "संकेतक", href: "/dashboard/indicators", icon: BarChart3, status: "pending" },
-  {
-    step: 7,
-    title: "Quality Check",
-    titleHi: "गुणवत्ता जांच",
-    href: "/dashboard/quality",
-    icon: CheckCircle2,
-    status: "pending",
-  },
-  { step: 8, title: "Export", titleHi: "निर्यात", href: "/dashboard/export", icon: FileText, status: "pending" },
+const steps = [
+  { key: "organization_profile", href: "/dashboard/organization", en: "Organization", hi: "संगठन" },
+  { key: "problem_definition", href: "/dashboard/problem", en: "Problem definition", hi: "समस्या परिभाषा" },
+  { key: "problem_tree", href: "/dashboard/problem", en: "Problem tree", hi: "समस्या वृक्ष" },
+  { key: "outcomes", href: "/dashboard/outcomes", en: "Student outcomes", hi: "छात्र परिणाम" },
+  { key: "methodology", href: "/dashboard/methodology", en: "Methodology", hi: "कार्यपद्धति" },
+  { key: "theory_of_change", href: "/dashboard/theory-of-change", en: "Theory of change", hi: "परिवर्तन का सिद्धांत" },
+  { key: "stakeholders", href: "/dashboard/stakeholders", en: "Stakeholders", hi: "हितधारक" },
+  { key: "practice_changes", href: "/dashboard/stakeholders", en: "Practice changes", hi: "अभ्यास परिवर्तन" },
+  { key: "indicators", href: "/dashboard/indicators", en: "Indicators", hi: "संकेतक" },
+  { key: "indicator_baselines", href: "/dashboard/indicators", en: "Targets and baseline", hi: "लक्ष्य और आधार" },
 ]
 
 export default function DashboardPage() {
-  const { t, language } = useLanguage()
-  const { currentOrganization, lfaSnapshot } = useAppStore()
-  const [completeness, setCompleteness] = useState(45)
-  const [quality, setQuality] = useState(78)
+  const { language } = useLanguage()
+  const { currentOrganization, activeTheme, lfaSnapshot, problemStatements } = useAppStore()
+  const [assessment, setAssessment] = useState<{ completeness: number; quality: number; sections: any[]; feedback: any[] }>({ completeness: 0, quality: 0, sections: [], feedback: [] })
+  const [coach, setCoach] = useState<{ headline: string; advice: string; next_action: string; evidence_note: string } | null>(null)
+  const [coachBusy, setCoachBusy] = useState(false)
+  const snapshot = lfaSnapshot as Record<string, any>
+  const focusKey = activeTheme || currentOrganization?.thematic_focus[0] || "fln"
+  const focusName = focusKey.toLowerCase() === "fln"
+    ? (language === "hi" ? "बुनियादी साक्षरता और संख्यात्मकता" : "Foundational Literacy and Numeracy")
+    : focusKey.replaceAll("_", " ")
+
+  useEffect(() => { setCoach(null) }, [activeTheme, currentOrganization?._id])
+
+  useEffect(() => {
+    if (!currentOrganization?._id) return
+    let active = true
+    Promise.all([
+      lfaApi.getCompleteness({ organization_id: currentOrganization._id, lfa_snapshot: snapshot }),
+      lfaApi.getQualityFeedback({ organization_id: currentOrganization._id, lfa_snapshot: snapshot }),
+    ]).then(([complete, quality]) => {
+      if (active) setAssessment({ completeness: complete.completion_percentage, quality: quality.quality_score, sections: complete.section_breakdown, feedback: quality.feedback_items })
+    }).catch(() => { if (active) setAssessment({ completeness: 0, quality: 0, sections: [], feedback: [] }) })
+    return () => { active = false }
+  }, [currentOrganization?._id, lfaSnapshot])
+
+  const nextStep = workflowPages.find((page) => page.snapshotKey && !hasPageData(snapshot, page)) || workflowPages.find((page) => page.href === "/dashboard/quality")!
+  const stakeholderCount = Array.isArray(snapshot.stakeholders) ? snapshot.stakeholders.length : 0
+  const outcomeCount = snapshot.outcomes?.smart_outcomes?.length || 0
+  const askCoach = async () => {
+    if (!currentOrganization) return
+    setCoachBusy(true)
+    try { setCoach(await coachApi.review(currentOrganization._id, snapshot, language)) }
+    catch (error: any) { setCoach({ headline: language === "hi" ? "मार्गदर्शन उपलब्ध नहीं" : "Guidance unavailable", advice: error.message, next_action: "", evidence_note: "" }) }
+    finally { setCoachBusy(false) }
+  }
 
   return (
     <DashboardLayout>
       <div className="space-y-8">
-        {/* Welcome Header */}
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight">{t("dashboard.welcome")}</h1>
-            <p className="text-muted-foreground mt-1">{t("dashboard.subtitle")}</p>
+            <p className="text-sm font-medium text-primary">{currentOrganization?.geography.state} · {focusName}</p>
+            <h1 className="text-3xl font-bold tracking-tight">{currentOrganization?.organization_name}</h1>
+            <p className="text-muted-foreground mt-1">{language === "hi" ? "आपके संगठन की कार्यक्रम डिज़ाइन प्रगति" : "Your organization's program design progress"}</p>
           </div>
-          <Link href="/dashboard/organization">
-            <Button>
-              {currentOrganization ? t("common.edit") : t("dashboard.getStarted")}
-              <ArrowRight className="ml-2 h-4 w-4" />
-            </Button>
-          </Link>
+          <Link href={nextStep.href}><Button>{language === "hi" ? `अगला: ${nextStep.hi}` : `Continue: ${nextStep.en}`}<ArrowRight className="ml-2 h-4 w-4" /></Button></Link>
         </div>
 
-        {/* Stats Overview */}
+        <CatalogCover
+          title={focusName}
+          theme={focusKey}
+          category={language === "hi" ? "आपका कार्यक्रम क्षेत्र" : "Your program focus"}
+          className="rounded-2xl border border-border"
+          imagePosition={focusKey.toLowerCase() === "fln" ? "52% 24%" : undefined}
+          large
+        />
+
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-          <StatCard
-            title={t("dashboard.completeness")}
-            value={`${completeness}%`}
-            trend="up"
-            trendValue="+12%"
-            icon={<FileText className="h-5 w-5" />}
-          />
-          <StatCard
-            title={t("dashboard.quality")}
-            value={`${quality}%`}
-            trend="up"
-            trendValue="+5%"
-            icon={<CheckCircle2 className="h-5 w-5" />}
-          />
-          <StatCard
-            title={language === "en" ? "Problem Statements" : "समस्या कथन"}
-            value="3"
-            description={language === "en" ? "2 refined" : "2 परिष्कृत"}
-            icon={<AlertCircle className="h-5 w-5" />}
-          />
-          <StatCard
-            title={language === "en" ? "Stakeholders" : "हितधारक"}
-            value="5"
-            description={language === "en" ? "Mapped" : "मैप किया गया"}
-            icon={<Users className="h-5 w-5" />}
-          />
+          <StatCard title={language === "hi" ? "पूर्णता" : "Completeness"} value={`${assessment.completeness}%`} icon={<FileText className="h-5 w-5" />} />
+          <StatCard title={language === "hi" ? "गुणवत्ता" : "Design quality"} value={`${assessment.quality}%`} icon={<CheckCircle2 className="h-5 w-5" />} />
+          <StatCard title={language === "hi" ? "समस्याएँ और परिणाम" : "Problems and outcomes"} value={`${problemStatements.length} / ${outcomeCount}`} icon={<Target className="h-5 w-5" />} />
+          <StatCard title={language === "hi" ? "हितधारक" : "Stakeholders"} value={String(stakeholderCount)} icon={<Users className="h-5 w-5" />} />
         </div>
 
-        {/* Charts Section */}
+        <section aria-label={language === "hi" ? "कार्यक्रम के चरण" : "Program stages"}>
+          <div className="mb-4"><h2 className="text-2xl font-semibold">{language === "hi" ? "कार्यक्रम बनाने के पाँच चरण" : "Five stages to build your program"}</h2><p className="text-sm text-muted-foreground">{language === "hi" ? "किसी भी भाग को खोलें। प्रगति सहेजी गई जानकारी से आती है।" : "Open any section. Progress reflects saved information."}</p></div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {workflow.map((stage, index) => {
+              const tracked = stage.pages.filter((page) => page.snapshotKey)
+              const complete = tracked.filter((page) => hasPageData(snapshot, page)).length
+              return <Card key={stage.en} className="h-full">
+                <CardHeader><p className="text-xs font-semibold uppercase tracking-widest text-primary">{language === "hi" ? "चरण" : "Stage"} {index + 1} / {workflow.length}</p><CardTitle className="text-lg">{language === "hi" ? stage.hi : stage.en}</CardTitle><CardDescription>{language === "hi" ? stage.descriptionHi : stage.descriptionEn}</CardDescription></CardHeader>
+                <CardContent className="space-y-3">
+                  {tracked.length > 0 && <div className="space-y-1"><p className="text-xs text-muted-foreground">{complete} / {tracked.length} {language === "hi" ? "भागों में विवरण सहेजे गए" : "sections with saved details"}</p><Progress value={complete / tracked.length * 100} /></div>}
+                  {stage.pages.map((page) => <Link key={page.href} href={page.href} className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm hover:border-primary hover:bg-primary/5"><span>{language === "hi" ? page.hi : page.en}</span>{page.snapshotKey && (hasPageData(snapshot, page) ? <CheckCircle2 className="h-4 w-4 text-green-600" /> : <ArrowRight className="h-4 w-4 text-muted-foreground" />)}</Link>)}
+                </CardContent>
+              </Card>
+            })}
+          </div>
+        </section>
+
+        <ProgramMap snapshot={snapshot} />
+
         <div className="grid gap-6 lg:grid-cols-2">
-          {/* Progress Chart */}
           <Card>
-            <CardHeader>
-              <CardTitle>{language === "en" ? "LFA Section Progress" : "LFA अनुभाग प्रगति"}</CardTitle>
-              <CardDescription>
-                {language === "en" ? "Completion status of each section" : "प्रत्येक अनुभाग की पूर्णता स्थिति"}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ChartContainer
-                config={{
-                  completed: { label: "Completed", color: "var(--chart-1)" },
-                }}
-                className="h-[300px]"
-              >
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={progressData} layout="vertical">
-                    <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                    <XAxis type="number" domain={[0, 100]} />
-                    <YAxis dataKey="name" type="category" width={100} />
-                    <ChartTooltip content={<ChartTooltipContent />} />
-                    <Bar dataKey="completed" fill="var(--color-chart-1)" radius={[0, 4, 4, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </ChartContainer>
+            <CardHeader><CardTitle>{language === "hi" ? "डिज़ाइन के चरण" : "Design sections"}</CardTitle><CardDescription>{language === "hi" ? "सहेजे गए विवरणों के आधार पर" : "Calculated from your saved inputs"}</CardDescription></CardHeader>
+            <CardContent className="space-y-5">
+              {steps.map((step) => {
+                const result = assessment.sections.find((part) => part.section === step.key)
+                const value = result ? Math.round(result.score / result.weight * 100) : 0
+                return <Link key={step.key} href={step.href} className="block space-y-2 rounded-lg p-2 hover:bg-muted/60">
+                  <div className="flex justify-between text-sm"><span>{language === "hi" ? step.hi : step.en}</span><span className="font-medium">{value}%</span></div>
+                  <Progress value={value} />
+                </Link>
+              })}
             </CardContent>
           </Card>
-
-          {/* Quality Metrics */}
           <Card>
-            <CardHeader>
-              <CardTitle>{language === "en" ? "Design Quality Metrics" : "डिजाइन गुणवत्ता मेट्रिक्स"}</CardTitle>
-              <CardDescription>
-                {language === "en" ? "Quality scores across dimensions" : "आयामों में गुणवत्ता स्कोर"}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ChartContainer
-                config={{
-                  value: { label: "Score" },
-                }}
-                className="h-[300px]"
-              >
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={qualityData}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={60}
-                      outerRadius={100}
-                      paddingAngle={5}
-                      dataKey="value"
-                      label={({ name, value }) => `${name}: ${value}%`}
-                    >
-                      {qualityData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.fill} />
-                      ))}
-                    </Pie>
-                    <ChartTooltip content={<ChartTooltipContent />} />
-                  </PieChart>
-                </ResponsiveContainer>
-              </ChartContainer>
+            <CardHeader><CardTitle>{language === "hi" ? "अगले सुधार" : "Next improvements"}</CardTitle><CardDescription>{language === "hi" ? "आपके वर्तमान डिज़ाइन पर आधारित" : "Based on this organization's design"}</CardDescription></CardHeader>
+            <CardContent className="space-y-3">
+              {assessment.feedback.length ? assessment.feedback.slice(0, 5).map((item, index) => <div key={index} className="rounded-lg border bg-muted/30 p-4">
+                <p className="font-medium">{presentableText(item.area, language)}</p><p className="text-sm text-muted-foreground">{presentableText(item.suggestion, language)}</p>
+              </div>) : <p className="text-sm text-muted-foreground">{language === "hi" ? "अपने कार्यक्रम का विवरण जोड़ें और समीक्षा करें।" : "Add and review your program details to see tailored guidance."}</p>}
+              <Link href="/dashboard/quality"><Button variant="outline" className="w-full">{language === "hi" ? "पूरी समीक्षा देखें" : "View full review"}</Button></Link>
             </CardContent>
           </Card>
         </div>
 
-        {/* Workflow Steps */}
-        <Card>
-          <CardHeader>
-            <CardTitle>{language === "en" ? "Program Design Workflow" : "कार्यक्रम डिजाइन कार्यप्रवाह"}</CardTitle>
-            <CardDescription>
-              {language === "en"
-                ? "Follow these steps to complete your LFA"
-                : "अपना LFA पूरा करने के लिए इन चरणों का पालन करें"}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              {workflowSteps.map((step) => {
-                const Icon = step.icon
-                const isComplete = step.status === "complete"
-                const isInProgress = step.status === "in-progress"
-
-                return (
-                  <Link key={step.step} href={step.href}>
-                    <Card
-                      className={`cursor-pointer transition-all hover:shadow-md ${
-                        isComplete
-                          ? "border-success/50 bg-success/5"
-                          : isInProgress
-                            ? "border-primary/50 bg-primary/5"
-                            : "hover:border-primary/30"
-                      }`}
-                    >
-                      <CardContent className="p-4">
-                        <div className="flex items-center gap-3">
-                          <div
-                            className={`flex h-10 w-10 items-center justify-center rounded-full ${
-                              isComplete
-                                ? "bg-success text-success-foreground"
-                                : isInProgress
-                                  ? "bg-primary text-primary-foreground"
-                                  : "bg-muted text-muted-foreground"
-                            }`}
-                          >
-                            {isComplete ? (
-                              <CheckCircle2 className="h-5 w-5" />
-                            ) : (
-                              <span className="text-sm font-semibold">{step.step}</span>
-                            )}
-                          </div>
-                          <div>
-                            <p className="font-medium text-sm">{language === "en" ? step.title : step.titleHi}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {isComplete
-                                ? language === "en"
-                                  ? "Completed"
-                                  : "पूर्ण"
-                                : isInProgress
-                                  ? language === "en"
-                                    ? "In Progress"
-                                    : "प्रगति में"
-                                  : language === "en"
-                                    ? "Pending"
-                                    : "लंबित"}
-                            </p>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </Link>
-                )
-              })}
-            </div>
+        <Card className="border-primary/30 bg-primary/5">
+          <CardHeader><CardTitle>{language === "hi" ? "AI डिज़ाइन कोच" : "AI design coach"}</CardTitle><CardDescription>{language === "hi" ? "आपके संगठन की प्रगति और संदर्भ से अगला कदम" : "A next step grounded in your organization's work"}</CardDescription></CardHeader>
+          <CardContent className="space-y-4"><Button onClick={askCoach} disabled={coachBusy}>{coachBusy ? (language === "hi" ? "विश्लेषण हो रहा है..." : "Reviewing...") : (language === "hi" ? "सलाह प्राप्त करें" : "Get tailored guidance")}</Button>
+            {coach && <div className="rounded-xl border bg-background p-5 space-y-2"><h3 className="text-lg font-semibold">{presentableText(coach.headline, language)}</h3><p>{presentableText(coach.advice, language)}</p>{coach.next_action && <p className="font-medium text-primary">{presentableText(coach.next_action, language)}</p>}{coach.evidence_note && <p className="text-sm text-muted-foreground">{presentableText(coach.evidence_note, language)}</p>}</div>}
           </CardContent>
         </Card>
 
-        {/* Quick Actions */}
-        <div className="grid gap-4 md:grid-cols-3">
-          <Card className="bg-gradient-to-br from-primary/10 to-primary/5 border-primary/20">
-            <CardContent className="p-6">
-              <h3 className="font-semibold mb-2">{language === "en" ? "Continue Building" : "निर्माण जारी रखें"}</h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                {language === "en" ? "Pick up where you left off" : "जहां आपने छोड़ा था वहां से शुरू करें"}
-              </p>
-              <Link href="/dashboard/problem">
-                <Button size="sm">
-                  {language === "en" ? "Continue" : "जारी रखें"}
-                  <ArrowRight className="ml-2 h-4 w-4" />
-                </Button>
-              </Link>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-gradient-to-br from-chart-2/10 to-chart-2/5 border-chart-2/20">
-            <CardContent className="p-6">
-              <h3 className="font-semibold mb-2">{language === "en" ? "Use a Template" : "एक टेम्पलेट का उपयोग करें"}</h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                {language === "en" ? "Start with a proven framework" : "एक सिद्ध ढांचे से शुरू करें"}
-              </p>
-              <Link href="/dashboard/templates">
-                <Button size="sm" variant="secondary">
-                  {language === "en" ? "Browse" : "ब्राउज़ करें"}
-                  <ArrowRight className="ml-2 h-4 w-4" />
-                </Button>
-              </Link>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-gradient-to-br from-chart-3/10 to-chart-3/5 border-chart-3/20">
-            <CardContent className="p-6">
-              <h3 className="font-semibold mb-2">{language === "en" ? "Export Report" : "रिपोर्ट निर्यात करें"}</h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                {language === "en" ? "Generate your LFA documents" : "अपने LFA दस्तावेज़ उत्पन्न करें"}
-              </p>
-              <Link href="/dashboard/export">
-                <Button size="sm" variant="secondary">
-                  {language === "en" ? "Export" : "निर्यात"}
-                  <ArrowRight className="ml-2 h-4 w-4" />
-                </Button>
-              </Link>
-            </CardContent>
-          </Card>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Link href="/dashboard/templates"><Card className="transition hover:border-primary"><CardContent className="flex items-center gap-4 p-6"><Building2 className="text-primary" /><span>{language === "hi" ? "अपने संगठन के लिए टेम्पलेट चुनें" : "Explore templates for your organization"}</span><ArrowRight className="ml-auto h-4 w-4" /></CardContent></Card></Link>
+          <Link href="/dashboard/export"><Card className="transition hover:border-primary"><CardContent className="flex items-center gap-4 p-6"><FileText className="text-primary" /><span>{language === "hi" ? "अपना कार्यक्रम दस्तावेज़ बनाएँ" : "Create your program documents"}</span><ArrowRight className="ml-auto h-4 w-4" /></CardContent></Card></Link>
         </div>
       </div>
     </DashboardLayout>

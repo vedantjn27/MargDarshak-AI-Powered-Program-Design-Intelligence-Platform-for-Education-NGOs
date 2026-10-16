@@ -25,8 +25,8 @@ const exportTypes = [
     type: "LFA_PDF" as const,
     title: "LFA Document",
     titleHi: "LFA दस्तावेज़",
-    description: "Complete Logical Framework Analysis as PDF",
-    descriptionHi: "PDF के रूप में पूर्ण तार्किक ढांचा विश्लेषण",
+    description: "Designed report with your diagrams, timeline, and indicator charts",
+    descriptionHi: "आपके आरेख, समयरेखा और संकेतक चार्ट वाला डिज़ाइन किया गया रिपोर्ट",
     icon: FileText,
     format: "PDF",
     extension: "pdf",
@@ -69,8 +69,8 @@ const exportTypes = [
     type: "PRESENTATION_PPT" as const,
     title: "Program Presentation",
     titleHi: "कार्यक्रम प्रस्तुति",
-    description: "Stakeholder-ready presentation deck",
-    descriptionHi: "हितधारक-तैयार प्रस्तुति डेक",
+    description: "Colorful stakeholder deck built from your saved program visuals",
+    descriptionHi: "आपकी सहेजी गई योजना के दृश्यों से बनी रंगीन प्रस्तुति",
     icon: Presentation,
     format: "PowerPoint",
     extension: "pptx",
@@ -91,7 +91,7 @@ export default function ExportPage() {
 
     try {
       const payload: ExportRequest = {
-        organization_id: currentOrganization?._id || "demo-org",
+        organization_id: currentOrganization!._id,
         export_type: type,
         lfa_snapshot: lfaSnapshot,
       }
@@ -217,8 +217,8 @@ export default function ExportPage() {
                   </li>
                   <li>
                     {language === "en"
-                      ? "• ToC diagram exports include both PNG and SVG formats"
-                      : "• ToC आरेख निर्यात में PNG और SVG दोनों प्रारूप शामिल हैं"}
+                      ? "• PDF and PowerPoint include the diagrams and charts you have saved"
+                      : "• PDF और PowerPoint में आपके सहेजे गए आरेख और चार्ट शामिल होते हैं"}
                   </li>
                   <li>
                     {language === "en"

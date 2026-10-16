@@ -1,8 +1,9 @@
 "use client"
 
 import { useState } from "react"
+import Link from "next/link"
 import { DashboardLayout } from "@/components/dashboard-layout"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
@@ -10,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useLanguage } from "@/components/language-provider"
 import { useAppStore } from "@/lib/store"
 import { lfaApi } from "@/lib/api"
+import { presentableText } from "@/lib/presentation"
 import { toast } from "sonner"
 import {
   CheckCircle2,
@@ -22,6 +24,18 @@ import {
   Lightbulb,
   AlertTriangle,
 } from "lucide-react"
+
+const pageForArea = (area: string) => {
+  const value = area.toLowerCase().replaceAll("_", " ")
+  if (value.includes("organization")) return "/dashboard/organization"
+  if (value.includes("problem")) return "/dashboard/problem"
+  if (value.includes("outcome")) return "/dashboard/outcomes"
+  if (value.includes("method") || value.includes("intervention")) return "/dashboard/methodology"
+  if (value.includes("stakeholder") || value.includes("practice")) return "/dashboard/stakeholders"
+  if (value.includes("theory")) return "/dashboard/theory-of-change"
+  if (value.includes("indicator") || value.includes("measurement") || value.includes("baseline")) return "/dashboard/indicators"
+  return "/dashboard"
+}
 
 export default function QualityPage() {
   const { language, t } = useLanguage()
@@ -36,14 +50,14 @@ export default function QualityPage() {
       const [completeness, quality] = await Promise.all([
         lfaApi.getCompleteness(
           {
-            organization_id: currentOrganization?._id || "demo-org",
+            organization_id: currentOrganization!._id,
             lfa_snapshot: lfaSnapshot,
           },
           language,
         ),
         lfaApi.getQualityFeedback(
           {
-            organization_id: currentOrganization?._id || "demo-org",
+            organization_id: currentOrganization!._id,
             lfa_snapshot: lfaSnapshot,
           },
           language,
@@ -103,6 +117,16 @@ export default function QualityPage() {
         </div>
 
         {completenessResult && qualityResult ? (
+          <>
+          <Card className="border-primary/30 bg-primary/5">
+            <CardHeader><CardTitle>{language === "hi" ? "निर्यात से पहले अगले सुधार" : "Next fixes before export"}</CardTitle><CardDescription>{language === "hi" ? "हर सुझाव उस भाग को खोलता है जहाँ आप बदलाव कर सकते हैं। पूर्णता और गुणवत्ता अलग-अलग माप हैं।" : "Each suggestion opens the section where you can act. Completeness and design quality measure different things."}</CardDescription></CardHeader>
+            <CardContent className="grid gap-3 md:grid-cols-3">
+              {qualityResult.feedback_items.slice(0, 3).map((item: any, index: number) => <Link key={index} href={pageForArea(item.section_key || item.area)} className="rounded-lg border bg-background p-4 hover:border-primary">
+                <p className="text-xs font-semibold uppercase text-primary">{item.area}</p><p className="mt-2 text-sm font-medium">{item.issue}</p><p className="mt-2 text-xs text-muted-foreground">{item.suggestion}</p><span className="mt-3 block text-xs font-semibold text-primary">{language === "hi" ? "यह भाग खोलें →" : "Open section →"}</span>
+              </Link>)}
+              {!qualityResult.feedback_items.length && <p className="text-sm text-muted-foreground">{language === "hi" ? "अभी कोई सुधार सूचीबद्ध नहीं है। निर्यात से पहले साक्ष्य और माप की जाँच करें।" : "No fixes are listed. Review evidence and measurements before export."}</p>}
+            </CardContent>
+          </Card>
           <Tabs defaultValue="completeness">
             <TabsList>
               <TabsTrigger value="completeness">{language === "en" ? "Completeness" : "पूर्णता"}</TabsTrigger>
@@ -232,18 +256,19 @@ export default function QualityPage() {
                             <div className="flex items-center gap-2 mb-1">
                               <Badge variant="outline">{item.area}</Badge>
                             </div>
-                            <p className="font-medium text-sm">{item.issue}</p>
+                            <p className="font-medium text-sm">{presentableText(item.issue, language)}</p>
                             {item.problems && (
                               <ul className="mt-1 text-sm text-muted-foreground">
                                 {item.problems.map((problem: string, i: number) => (
-                                  <li key={i}>• {problem}</li>
+                                  <li key={i}>• {presentableText(problem, language)}</li>
                                 ))}
                               </ul>
                             )}
                             <div className="mt-2 flex items-start gap-2 text-sm text-primary">
                               <Lightbulb className="h-4 w-4 shrink-0 mt-0.5" />
-                              <span>{item.suggestion}</span>
+                              <span>{presentableText(item.suggestion, language)}</span>
                             </div>
+                            <Button asChild size="sm" variant="outline" className="mt-3"><Link href={pageForArea(item.section_key || item.area)}>{language === "hi" ? "यह भाग सुधारें" : "Improve this section"}</Link></Button>
                           </div>
                         </div>
                       </CardContent>
@@ -265,6 +290,7 @@ export default function QualityPage() {
               )}
             </TabsContent>
           </Tabs>
+          </>
         ) : (
           <Card>
             <CardContent className="py-16 text-center">

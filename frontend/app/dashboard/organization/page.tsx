@@ -90,6 +90,7 @@ export default function OrganizationPage() {
   const router = useRouter()
   const { language, t } = useLanguage()
   const { setCurrentOrganization, updateLFASnapshot } = useAppStore()
+  const currentOrganization = useAppStore((state) => state.currentOrganization)
   const [loading, setLoading] = useState(false)
   const [selectedThemes, setSelectedThemes] = useState<string[]>([])
   const [teamExpertise, setTeamExpertise] = useState<TeamExpertiseItem[]>([])
@@ -153,7 +154,7 @@ export default function OrganizationPage() {
       })
 
       toast.success(language === "en" ? "Organization profile created!" : "संगठन प्रोफ़ाइल बनाई गई!")
-      router.push("/dashboard/problem")
+      router.push("/dashboard")
     } catch (error: any) {
       console.error("[v0] Organization creation error:", error)
 
@@ -187,6 +188,20 @@ export default function OrganizationPage() {
     students: 0,
     teachers: 0,
   })
+
+  if (currentOrganization) return <DashboardLayout>
+    <div className="mx-auto max-w-4xl space-y-6">
+      <div><h1 className="text-3xl font-bold">{language === "hi" ? "आपका संगठन" : "Your organization"}</h1><p className="text-muted-foreground">{language === "hi" ? "इस खाते से जुड़ी पंजीकृत जानकारी" : "The registered profile linked to this account"}</p></div>
+      <Card><CardHeader><CardTitle>{currentOrganization.organization_name}</CardTitle><CardDescription>{currentOrganization.geography.state}{currentOrganization.geography.district ? `, ${currentOrganization.geography.district}` : ""}</CardDescription></CardHeader>
+        <CardContent className="grid gap-5 sm:grid-cols-2">
+          <div><p className="text-sm text-muted-foreground">{language === "hi" ? "मुख्य विषय" : "Focus areas"}</p><div className="mt-2 flex flex-wrap gap-2">{currentOrganization.thematic_focus.map((theme) => <Badge key={theme} variant="secondary">{theme.replaceAll("_", " ")}</Badge>)}</div></div>
+          <div><p className="text-sm text-muted-foreground">{language === "hi" ? "संगठन का चरण" : "Organization stage"}</p><p className="font-medium capitalize">{currentOrganization.maturity_level}</p></div>
+          <div><p className="text-sm text-muted-foreground">{language === "hi" ? "टीम का आकार" : "Team size"}</p><p className="font-medium">{currentOrganization.team_size}</p></div>
+          <div><p className="text-sm text-muted-foreground">{language === "hi" ? "पहुँच" : "Reach"}</p><p className="font-medium">{currentOrganization.reach_metrics?.schools || 0} {language === "hi" ? "स्कूल" : "schools"}, {currentOrganization.reach_metrics?.students || 0} {language === "hi" ? "छात्र" : "students"}</p></div>
+        </CardContent></Card>
+        <Button onClick={() => router.push("/dashboard")}>{language === "hi" ? "कार्यस्थल खोलें" : "Open workspace"}<ArrowRight className="ml-2 h-4 w-4" /></Button>
+    </div>
+  </DashboardLayout>
 
   return (
     <DashboardLayout>

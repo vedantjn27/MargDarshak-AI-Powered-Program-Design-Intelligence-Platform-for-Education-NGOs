@@ -1,21 +1,23 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { MermaidDiagram } from "@/components/mermaid-diagram"
+import { OutcomeTimeline } from "@/components/outcome-timeline"
+import { SmartValidationCard } from "@/components/smart-validation-card"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useLanguage } from "@/components/language-provider"
 import { useAppStore } from "@/lib/store"
 import { outcomesApi } from "@/lib/api"
+import { normalizeOutcomeTimeline, presentableText } from "@/lib/presentation"
 import { toast } from "sonner"
-import { Target, Sparkles, Loader2, CheckCircle2, AlertCircle, TrendingUp, Calendar } from "lucide-react"
+import { Target, Sparkles, Loader2, CheckCircle2, TrendingUp, Calendar } from "lucide-react"
 
 const gradeRanges = [
   { value: "pre-primary", label: "Pre-Primary", labelHi: "पूर्व-प्राथमिक" },
@@ -28,9 +30,13 @@ const gradeRanges = [
 
 export default function OutcomesPage() {
   const { language, t } = useLanguage()
-  const { currentOrganization, addStudentOutcome, studentOutcomes, updateLFASnapshot } = useAppStore()
+  const { currentOrganization, activeTheme, addStudentOutcome, studentOutcomes, updateLatestOutcomeValidation, updateLFASnapshot, lfaSnapshot } = useAppStore()
   const [loading, setLoading] = useState(false)
-  const [currentOutcome, setCurrentOutcome] = useState<any>(null)
+  const [storedOutcome, setCurrentOutcome] = useState<any>(null)
+  const currentOutcome = storedOutcome ? normalizeOutcomeTimeline(storedOutcome, language) : null
+  const [recheckFailed, setRecheckFailed] = useState(false)
+
+  useEffect(() => { setCurrentOutcome(studentOutcomes.at(-1) || null) }, [studentOutcomes])
 
   const [formData, setFormData] = useState({
     grade_range: "",
@@ -39,6 +45,31 @@ export default function OutcomesPage() {
     target_value: 0,
     timeline_months: 12,
   })
+
+  const outcomeStatement = currentOutcome?.outcome_statement || lfaSnapshot.outcomes?.outcome_statement || ""
+  const statedMonths = Number(outcomeStatement.match(/\b(\d+)\s*months?\b/i)?.[1]) || 0
+  const outcomeMonths = currentOutcome?.timeline_months || lfaSnapshot.outcomes?.timeline_months || statedMonths || Math.max(12, ...(currentOutcome?.milestones || []).map((item: { month: number }) => item.month))
+  const outcomeBaseline = currentOutcome?.baseline ?? lfaSnapshot.outcomes?.baseline_value ?? 0
+  const outcomeTarget = currentOutcome?.target ?? lfaSnapshot.outcomes?.target_value ?? 0
+
+  useEffect(() => {
+    const previous = studentOutcomes.at(-1)
+    if (!previous || previous.smart_validation.criteria || !currentOrganization?._id) return
+    const statement = previous.outcome_statement || lfaSnapshot.outcomes?.outcome_statement
+    const baseline = previous.baseline ?? lfaSnapshot.outcomes?.baseline_value
+    const target = previous.target ?? lfaSnapshot.outcomes?.target_value
+    const months = previous.timeline_months || lfaSnapshot.outcomes?.timeline_months || Number(statement?.match(/\b(\d+)\s*months?\b/i)?.[1]) || Math.max(12, ...previous.milestones.map((item) => item.month))
+    if (!statement || baseline == null || target == null) {
+      setRecheckFailed(true)
+      return
+    }
+    let active = true
+    setRecheckFailed(false)
+    outcomesApi.validate({ organization_id: currentOrganization._id, theme: activeTheme || currentOrganization.thematic_focus[0], outcome_statement: statement, baseline_value: baseline, target_value: target, timeline_months: months }, language)
+      .then((validation) => { if (active) updateLatestOutcomeValidation(validation) })
+      .catch(() => { if (active) setRecheckFailed(true) })
+    return () => { active = false }
+  }, [studentOutcomes, currentOrganization?._id, activeTheme, lfaSnapshot.outcomes, language, updateLatestOutcomeValidation])
 
   const handleSubmit = async () => {
     if (!formData.outcome_statement || !formData.grade_range) {
@@ -49,9 +80,9 @@ export default function OutcomesPage() {
     setLoading(true)
     try {
       const payload = {
-        organization_id: currentOrganization?._id || "demo-org",
-        theme: currentOrganization?.thematic_focus[0] || "fln",
-        state: currentOrganization?.geography.state || "Rajasthan",
+        organization_id: currentOrganization!._id,
+        theme: activeTheme || currentOrganization!.thematic_focus[0],
+        state: currentOrganization!.geography.state,
         grade_range: formData.grade_range,
         outcome_statement: formData.outcome_statement,
         baseline_value: formData.baseline_value,
@@ -60,10 +91,16 @@ export default function OutcomesPage() {
       }
 
       const result = await outcomesApi.create(payload, language)
-      setCurrentOutcome(result)
-      addStudentOutcome(result)
+      const readable = normalizeOutcomeTimeline(result, language)
+      setCurrentOutcome(readable)
+      addStudentOutcome(readable)
       updateLFASnapshot("outcomes", {
-        smart_outcomes: [...studentOutcomes.flatMap((o) => o.aligned_competencies), ...result.aligned_competencies],
+        smart_outcomes: [...(useAppStore.getState().lfaSnapshot.outcomes?.smart_outcomes || []), formData.outcome_statement],
+        outcome_statement: formData.outcome_statement,
+        baseline_value: formData.baseline_value,
+        target_value: formData.target_value,
+        timeline_months: formData.timeline_months,
+        milestones: readable.milestones,
       })
 
       toast.success(language === "en" ? "Outcome created and validated!" : "परिणाम बनाया और मान्य किया गया!")
@@ -238,43 +275,9 @@ export default function OutcomesPage() {
           <div className="space-y-6">
             {currentOutcome ? (
               <>
-                {/* SMART Validation */}
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      {t("outcomes.smart")}
-                      <Badge variant={currentOutcome.smart_validation.is_valid ? "default" : "destructive"}>
-                        {currentOutcome.smart_validation.smart_score}/5
-                      </Badge>
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <Progress
-                      value={currentOutcome.smart_validation.smart_score * 20}
-                      className={`h-3 ${currentOutcome.smart_validation.is_valid ? "[&>div]:bg-success" : "[&>div]:bg-warning"}`}
-                    />
+                <Card><CardHeader><CardTitle>{language === "hi" ? "हम क्या हासिल करना चाहते हैं" : "What this outcome will achieve"}</CardTitle></CardHeader><CardContent><p className="leading-7">{presentableText(currentOutcome.outcome_explanation, language)}</p></CardContent></Card>
 
-                    {currentOutcome.smart_validation.issues.length > 0 && (
-                      <div className="mt-4 space-y-2">
-                        {currentOutcome.smart_validation.issues.map((issue: string, index: number) => (
-                          <div key={index} className="flex items-start gap-2 text-sm">
-                            <AlertCircle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
-                            <span>{issue}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {currentOutcome.smart_validation.is_valid && (
-                      <div className="mt-4 flex items-center gap-2 text-success">
-                        <CheckCircle2 className="h-5 w-5" />
-                        <span className="font-medium">
-                          {language === "en" ? "SMART criteria met!" : "SMART मानदंड पूरा!"}
-                        </span>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
+                <SmartValidationCard validation={currentOutcome.smart_validation} language={language} recheckFailed={recheckFailed} />
 
                 {/* Aligned Competencies */}
                 {currentOutcome.aligned_competencies.length > 0 && (
@@ -286,7 +289,7 @@ export default function OutcomesPage() {
                       <div className="flex flex-wrap gap-2">
                         {currentOutcome.aligned_competencies.map((comp: string, index: number) => (
                           <Badge key={index} variant="secondary">
-                            {comp}
+                            {presentableText(comp, language)}
                           </Badge>
                         ))}
                       </div>
@@ -305,7 +308,7 @@ export default function OutcomesPage() {
                         {currentOutcome.policy_references.map((ref: string, index: number) => (
                           <li key={index} className="flex items-start gap-2 text-sm">
                             <CheckCircle2 className="h-4 w-4 text-primary shrink-0 mt-0.5" />
-                            <span>{ref}</span>
+                            <span>{presentableText(ref, language)}</span>
                           </li>
                         ))}
                       </ul>
@@ -313,14 +316,6 @@ export default function OutcomesPage() {
                   </Card>
                 )}
 
-                {/* Timeline Diagram */}
-                <MermaidDiagram
-                  title={language === "en" ? "Outcome Timeline" : "परिणाम समयरेखा"}
-                  diagram={currentOutcome.outcome_timeline_diagram}
-                  previewUrl={currentOutcome.timeline_preview_url}
-                  pngUrl={currentOutcome.timeline_png_url}
-                  svgUrl={currentOutcome.timeline_svg_url}
-                />
               </>
             ) : (
               <Card className="h-full">
@@ -339,6 +334,21 @@ export default function OutcomesPage() {
             )}
           </div>
         </div>
+        {currentOutcome && <section className="space-y-5" aria-label={language === "hi" ? "परिणाम समयरेखा" : "Outcome timeline"}>
+          <OutcomeTimeline milestones={currentOutcome.milestones || []} baseline={outcomeBaseline} target={outcomeTarget} months={outcomeMonths} language={language} />
+          <details className="rounded-xl border bg-card p-4">
+            <summary className="cursor-pointer text-sm font-semibold text-primary">{language === "hi" ? "चित्र डाउनलोड करें या संपादित करें" : "View, download, or edit the diagram image"}</summary>
+            <div className="mt-4">
+              <MermaidDiagram
+                title={language === "en" ? "Outcome Timeline Diagram" : "परिणाम समयरेखा चित्र"}
+                diagram={currentOutcome.outcome_timeline_diagram}
+                previewUrl={currentOutcome.timeline_preview_url}
+                pngUrl={currentOutcome.timeline_png_url}
+                svgUrl={currentOutcome.timeline_svg_url}
+              />
+            </div>
+          </details>
+        </section>}
       </div>
     </DashboardLayout>
   )

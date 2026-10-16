@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { MermaidDiagram } from "@/components/mermaid-diagram"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -14,6 +14,7 @@ import { Progress } from "@/components/ui/progress"
 import { useLanguage } from "@/components/language-provider"
 import { useAppStore } from "@/lib/store"
 import { problemApi } from "@/lib/api"
+import { normalizeProblemRefinement, normalizeProblemTree } from "@/lib/presentation"
 import { toast } from "sonner"
 import {
   AlertTriangle,
@@ -41,16 +42,24 @@ export default function ProblemPage() {
   const { language, t } = useLanguage()
   const {
     currentOrganization,
+    activeTheme,
     setCurrentRefinement,
     setProblemTree,
-    currentRefinement,
-    problemTree,
+    currentRefinement: storedRefinement,
+    problemTree: storedProblemTree,
     updateLFASnapshot,
+    addProblemStatement,
+    problemStatements,
+    lfaSnapshot,
   } = useAppStore()
+  const currentRefinement = storedRefinement ? normalizeProblemRefinement(storedRefinement, language) : null
+  const problemTree = storedProblemTree ? normalizeProblemTree(storedProblemTree, language) : null
   const [loading, setLoading] = useState(false)
   const [refineLoading, setRefineLoading] = useState(false)
   const [treeLoading, setTreeLoading] = useState(false)
   const [activeTab, setActiveTab] = useState("define")
+  const [refinedDraft, setRefinedDraft] = useState("")
+  const [reviewStatus, setReviewStatus] = useState<"pending" | "accepted" | "discarded">("pending")
 
   const [problemData, setProblemData] = useState({
     core_problem: "",
@@ -59,6 +68,10 @@ export default function ProblemPage() {
   })
 
   const [createdProblemId, setCreatedProblemId] = useState<string | null>(null)
+
+  useEffect(() => { setCreatedProblemId(problemStatements.at(-1)?._id || null) }, [problemStatements])
+  useEffect(() => { if (currentRefinement) setRefinedDraft(currentRefinement.refined_problem_statement) }, [currentRefinement?.problem_statement_id])
+  useEffect(() => { setReviewStatus(lfaSnapshot.problem_definition?.ai_review_status || "pending") }, [lfaSnapshot.problem_definition?.ai_review_status])
 
   const handleStakeholderToggle = (stakeholder: string) => {
     setProblemData((prev) => ({
@@ -91,7 +104,7 @@ export default function ProblemPage() {
   }
 
   const handleSubmit = async () => {
-    if (!problemData.core_problem || problemData.affected_stakeholders.length === 0) {
+    if (problemData.core_problem.trim().length < 20) {
       toast.error(language === "en" ? "Please fill required fields" : "कृपया आवश्यक फ़ील्ड भरें")
       return
     }
@@ -99,7 +112,8 @@ export default function ProblemPage() {
     setLoading(true)
     try {
       const payload = {
-        organization_id: currentOrganization?._id || "demo-org",
+        organization_id: currentOrganization!._id,
+        theme: activeTheme || currentOrganization!.thematic_focus[0],
         core_problem: problemData.core_problem,
         affected_stakeholders: problemData.affected_stakeholders,
         evidence: problemData.evidence
@@ -112,10 +126,16 @@ export default function ProblemPage() {
       }
 
       const result = await problemApi.create(payload, language)
+      addProblemStatement(result)
+      setCurrentRefinement(null)
+      setRefinedDraft("")
+      setReviewStatus("pending")
+      setProblemTree(null)
       setCreatedProblemId(result._id)
       updateLFASnapshot("problem_definition", {
         core_problem: problemData.core_problem,
         affected_group: problemData.affected_stakeholders,
+        ai_review_status: "pending",
       })
 
       toast.success(language === "en" ? "Problem statement created!" : "समस्या कथन बनाया गया!")
@@ -133,13 +153,34 @@ export default function ProblemPage() {
     setRefineLoading(true)
     try {
       const result = await problemApi.refine(createdProblemId, language)
-      setCurrentRefinement(result)
+      const readable = normalizeProblemRefinement(result, language)
+      setCurrentRefinement(readable)
+      setRefinedDraft(readable.refined_problem_statement)
+      setReviewStatus("pending")
       toast.success(language === "en" ? "Problem refined successfully!" : "समस्या सफलतापूर्वक परिष्कृत!")
     } catch (error: any) {
       toast.error(error.message)
     } finally {
       setRefineLoading(false)
     }
+  }
+
+  const reviewRefinement = (accept: boolean) => {
+    if (!currentRefinement) return
+    const statement = accept ? refinedDraft.trim() : (problemStatements.at(-1)?.core_problem || problemData.core_problem)
+    if (statement.length < 20) {
+      toast.error(language === "hi" ? "समस्या विवरण कम से कम 20 अक्षरों का रखें।" : "Keep the problem statement at least 20 characters long.")
+      return
+    }
+    setCurrentRefinement({ ...currentRefinement, refined_problem_statement: statement })
+    updateLFASnapshot("problem_definition", {
+      core_problem: statement,
+      affected_group: accept ? [...problemData.affected_stakeholders, ...currentRefinement.suggested_stakeholders] : problemData.affected_stakeholders,
+      evidence_to_verify: currentRefinement.evidence_suggestions,
+      ai_review_status: accept ? "accepted" : "discarded",
+    })
+    setReviewStatus(accept ? "accepted" : "discarded")
+    toast.success(language === "hi" ? "आपकी पसंद योजना में सहेजी गई।" : "Your choice was saved to the design.")
   }
 
   const handleGenerateTree = async () => {
@@ -151,17 +192,18 @@ export default function ProblemPage() {
         organization_id: currentOrganization._id,
         state: currentOrganization.geography.state,
         district: currentOrganization.geography.district || "",
-        theme: currentOrganization.thematic_focus[0] || "fln",
+        theme: activeTheme || currentOrganization.thematic_focus[0],
         refined_problem_statement: currentRefinement.refined_problem_statement,
         suggested_root_causes: currentRefinement.suggested_root_causes,
       }
 
       const result = await problemApi.generateTree(payload, language)
-      setProblemTree(result)
+      const readable = normalizeProblemTree(result, language)
+      setProblemTree(readable)
       updateLFASnapshot("problem_tree", {
-        root_causes: result.problem_tree.causes.map((c) => c.label),
-        core_problem: result.problem_tree.core_problem.label,
-        effects: result.problem_tree.effects.map((e) => e.label),
+        root_causes: readable.problem_tree.causes.map((c) => c.label),
+        core_problem: readable.problem_tree.core_problem.label,
+        effects: readable.problem_tree.effects.map((e) => e.label),
       })
 
       toast.success(language === "en" ? "Problem tree generated!" : "समस्या वृक्ष उत्पन्न!")
@@ -409,12 +451,25 @@ export default function ProblemPage() {
                       {language === "en" ? "Refined Problem Statement" : "परिष्कृत समस्या कथन"}
                     </CardTitle>
                   </CardHeader>
-                  <CardContent>
-                    <p className="p-4 bg-success/10 rounded-lg border border-success/20">
-                      {currentRefinement.refined_problem_statement}
-                    </p>
+                  <CardContent className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="rounded-lg border bg-muted/30 p-4"><p className="mb-2 text-xs font-semibold uppercase text-muted-foreground">{language === "hi" ? "आपका मूल विवरण" : "Your original statement"}</p><p className="text-sm whitespace-pre-wrap">{problemStatements.at(-1)?.core_problem || problemData.core_problem}</p></div>
+                      <div className="rounded-lg border border-primary/30 bg-primary/5 p-4"><Label htmlFor="refined-review" className="mb-2 block text-xs font-semibold uppercase">{language === "hi" ? "AI का सुझाव — बदल सकते हैं" : "AI suggestion — editable"}</Label><Textarea id="refined-review" value={refinedDraft} onChange={(event) => { setRefinedDraft(event.target.value); setReviewStatus("pending") }} className="min-h-32 bg-background" /></div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{language === "hi" ? "AI के सुझाए साक्ष्य को उपयोग से पहले जाँचें। आपकी स्वीकृति के बाद ही नया सार योजना में जाएगा।" : "Verify suggested evidence before use. The revised statement enters your design only after you accept it."}</p>
+                    <div className="flex flex-wrap items-center gap-2"><Button onClick={() => reviewRefinement(true)}>{language === "hi" ? "सार स्वीकारें" : "Accept edited summary"}</Button><Button variant="outline" onClick={() => reviewRefinement(false)}>{language === "hi" ? "मूल विवरण रखें" : "Keep original"}</Button>{reviewStatus !== "pending" && <Badge variant="secondary">{reviewStatus === "accepted" ? (language === "hi" ? "सार सहेजा गया" : "Summary saved") : (language === "hi" ? "मूल विवरण सहेजा गया" : "Original saved")}</Badge>}</div>
                   </CardContent>
                 </Card>
+
+                {/* Root Causes */}
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Card><CardHeader><CardTitle>{language === "hi" ? "सुझाए गए हितधारक" : "Suggested stakeholders"}</CardTitle></CardHeader><CardContent className="space-y-2">
+                    {currentRefinement.suggested_stakeholders?.map((person, index) => <div key={index} className="flex items-start gap-3 rounded-lg bg-muted p-3 text-sm"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 font-semibold text-primary">{index + 1}</span><p className="leading-6">{person}</p></div>)}
+                  </CardContent></Card>
+                  <Card><CardHeader><CardTitle>{language === "hi" ? "जाँचने के लिए साक्ष्य" : "Evidence to verify"}</CardTitle></CardHeader><CardContent className="space-y-2">
+                    {currentRefinement.evidence_suggestions?.map((item, index) => <div key={index} className="flex items-start gap-3 rounded-lg bg-muted p-3 text-sm"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 font-semibold text-primary">{index + 1}</span><p className="leading-6">{item}</p></div>)}
+                  </CardContent></Card>
+                </div>
 
                 {/* Root Causes */}
                 <Card>
@@ -437,7 +492,7 @@ export default function ProblemPage() {
                 </Card>
 
                 <div className="flex justify-end">
-                  <Button onClick={handleGenerateTree} disabled={treeLoading}>
+                  <Button onClick={handleGenerateTree} disabled={treeLoading || reviewStatus === "pending"}>
                     {treeLoading ? (
                       <>
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -466,6 +521,25 @@ export default function ProblemPage() {
                   pngUrl={problemTree.mermaid_png_url}
                   svgUrl={problemTree.mermaid_svg_url}
                 />
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Card>
+                    <CardHeader><CardTitle>{language === "hi" ? "संभावित कारण" : "Possible causes"}</CardTitle></CardHeader>
+                    <CardContent className="space-y-2">
+                      {problemTree.problem_tree.causes.map((cause, index) => (
+                        <p key={cause.id} className="rounded-lg bg-muted p-3 text-sm"><span className="mr-2 font-semibold text-primary">{index + 1}.</span>{cause.label}</p>
+                      ))}
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardHeader><CardTitle>{language === "hi" ? "संभावित प्रभाव" : "Potential effects"}</CardTitle></CardHeader>
+                    <CardContent className="space-y-2">
+                      {problemTree.problem_tree.effects.map((effect, index) => (
+                        <p key={effect.id} className="rounded-lg bg-muted p-3 text-sm"><span className="mr-2 font-semibold text-primary">{index + 1}.</span>{effect.label}</p>
+                      ))}
+                    </CardContent>
+                  </Card>
+                </div>
 
                 {problemTree.validation_feedback.length > 0 && (
                   <Card>

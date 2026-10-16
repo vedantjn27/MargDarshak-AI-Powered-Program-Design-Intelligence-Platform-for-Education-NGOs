@@ -6,10 +6,8 @@ interface ApiOptions {
 
 async function fetchApi<T>(endpoint: string, options: RequestInit = {}, apiOptions: ApiOptions = {}): Promise<T> {
   const { language = "en" } = apiOptions
-  const url = `${API_BASE_URL}${endpoint}?language=${language}`
+  const url = `${API_BASE_URL}${endpoint}${endpoint.includes("?") ? "&" : "?"}language=${encodeURIComponent(language)}`
 
-  console.log("[v0] Making request to:", url)
-  console.log("[v0] Request method:", options.method || "GET")
 
   let response: Response
 
@@ -22,14 +20,12 @@ async function fetchApi<T>(endpoint: string, options: RequestInit = {}, apiOptio
       },
     })
 
-    console.log("[v0] Response status:", response.status)
   } catch (networkError: any) {
     console.error("[v0] Network error:", networkError.message)
     throw new Error(`Network error: ${networkError.message}`)
   }
 
   const responseText = await response.text()
-  console.log("[v0] Response body:", responseText.substring(0, 500))
 
   if (!response.ok) {
     let errorMessage = `Request failed with status ${response.status}`
@@ -53,6 +49,20 @@ async function fetchApi<T>(endpoint: string, options: RequestInit = {}, apiOptio
   } catch (parseError) {
     throw new Error("Invalid JSON response from server")
   }
+}
+
+export interface AuthSession {
+  user: { id: string; email: string }
+  organization: Organization | null
+}
+
+export const authApi = {
+  signup: (email: string, password: string) =>
+    fetchApi<AuthSession>("/auth/signup", { method: "POST", body: JSON.stringify({ email, password }) }),
+  login: (email: string, password: string) =>
+    fetchApi<AuthSession>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
+  me: () => fetchApi<AuthSession>("/auth/me"),
+  logout: () => fetchApi<{ message: string }>("/auth/logout", { method: "POST" }),
 }
 
 // Organization APIs
@@ -85,11 +95,15 @@ export const problemApi = {
 export const outcomesApi = {
   create: (data: StudentOutcomeRequest, language?: string) =>
     fetchApi<StudentOutcomeResponse>("/student-outcomes", { method: "POST", body: JSON.stringify(data) }, { language }),
+  validate: (data: SmartValidationRequest, language?: string) =>
+    fetchApi<SmartValidation>("/student-outcomes/validate", { method: "POST", body: JSON.stringify(data) }, { language }),
 }
 
 // Methodology APIs
 export const methodologyApi = {
-  getAll: (language?: string) => fetchApi<{ count: number; methodologies: any[] }>("/methodologies", {}, { language }),
+  getAll: (orgId: string, theme: string, language?: string) => fetchApi<{ count: number; methodologies: any[] }>(`/methodologies?organization_id=${encodeURIComponent(orgId)}&theme=${encodeURIComponent(theme)}`, {}, { language }),
+  getSaved: (orgId: string, theme: string, language?: string) => fetchApi<{ selected_methodology_ids: string[]; custom_components: string[] }>(`/organization/${orgId}/methodologies/saved?theme=${encodeURIComponent(theme)}`, {}, { language }),
+  getDetail: (orgId: string, name: string, language?: string) => fetchApi<{ name: string; summary: string; implementation_steps: string[]; workflow: { title: string; example: string }[]; when_to_use: string; resources_needed: string[]; risks: string[]; success_measures: string[] }>(`/organization/${orgId}/methodologies/detail?name=${encodeURIComponent(name)}`, {}, { language }),
 
   filter: (data: MethodologyFilter, language?: string) =>
     fetchApi<MethodologyResponse>("/methodologies", { method: "POST", body: JSON.stringify(data) }, { language }),
@@ -112,6 +126,10 @@ export const stakeholderApi = {
       { method: "POST", body: JSON.stringify(data) },
       { language },
     ),
+  saveSelection: (orgId: string, theme: string, stakeholderIds: string[], language?: string) =>
+    fetchApi<{ selected_stakeholders: string[] }>(`/organization/${orgId}/stakeholders`, {
+      method: "PUT", body: JSON.stringify({ theme, stakeholder_ids: stakeholderIds }),
+    }, { language }),
 }
 
 // Practice Change APIs
@@ -153,14 +171,17 @@ export const lfaApi = {
       { language },
     ),
 
-  getTemplates: (params?: TemplateFilterParams, language?: string) => {
+  getTemplates: (params?: TemplateFilterParams, language?: string, organizationId?: string) => {
     const queryParams = new URLSearchParams()
     if (params?.theme) queryParams.set("theme", params.theme)
     if (params?.system_level) queryParams.set("system_level", params.system_level)
     if (params?.geography_type) queryParams.set("geography_type", params.geography_type)
+    if (organizationId) queryParams.set("organization_id", organizationId)
     const query = queryParams.toString() ? `?${queryParams.toString()}` : ""
     return fetchApi<TemplateListResponse>(`/lfa/templates${query}`, {}, { language })
   },
+  getSavedTemplates: (orgId: string, theme: string, language?: string) => fetchApi<TemplateListResponse>(`/organization/${orgId}/templates/saved?theme=${encodeURIComponent(theme)}`, {}, { language }),
+  getTemplateDetail: (orgId: string, templateId: string, language?: string) => fetchApi<{ name: string; theme?: string; system_level?: string; overview: string; best_for: string; sections: string[]; section_cards?: { title: string; description: string }[]; workflow?: { title: string; description: string }[]; adaptation_tips: string[] }>(`/organization/${orgId}/templates/detail?template_id=${encodeURIComponent(templateId)}`, {}, { language }),
 
   forkTemplate: (data: ForkTemplateRequest, language?: string) =>
     fetchApi<{ message: string; template_id: string }>(
@@ -212,6 +233,15 @@ export const healthApi = {
     fetchApi<{ status: string; service: string; timestamp: string }>("/health", {}, { language }),
 }
 
+export const coachApi = {
+  review: (orgId: string, lfaSnapshot: Record<string, any>, language?: string) =>
+    fetchApi<{ section: string; headline: string; advice: string; next_action: string; evidence_note: string }>(
+      `/organization/${orgId}/design-coach`,
+      { method: "POST", body: JSON.stringify({ organization_id: orgId, lfa_snapshot: lfaSnapshot }) },
+      { language },
+    ),
+}
+
 // Types
 export interface Organization {
   _id: string
@@ -247,6 +277,7 @@ export interface AIContextAnalysis {
 export interface ProblemStatement {
   _id: string
   organization_id: string
+  theme?: string
   core_problem: string
   affected_stakeholders: string[]
   evidence?: { source?: string; description: string; year?: number }[]
@@ -256,6 +287,7 @@ export interface ProblemStatement {
 
 export interface ProblemStatementCreate {
   organization_id: string
+  theme: string
   core_problem: string
   affected_stakeholders: string[]
   evidence?: { source?: string; description: string; year?: number }[]
@@ -267,6 +299,8 @@ export interface ProblemRefinement {
   identified_issues: { issue_type: string; description: string }[]
   refined_problem_statement: string
   suggested_root_causes: { cause: string; rationale: string }[]
+  suggested_stakeholders: string[]
+  evidence_suggestions: string[]
   generated_at: string
 }
 
@@ -308,16 +342,40 @@ export interface StudentOutcomeRequest {
 }
 
 export interface StudentOutcomeResponse {
-  smart_validation: { smart_score: number; issues: string[]; is_valid: boolean }
+  smart_validation: SmartValidation
   aligned_competencies: string[]
   policy_references: string[]
   outcome_timeline_diagram: string
   timeline_preview_url: string
   timeline_png_url: string
   timeline_svg_url: string
+  outcome_explanation: string
+  milestones: { month: number; title: string; action: string; measure: string }[]
+  outcome_statement?: string
+  baseline?: number
+  target?: number
+  timeline_months?: number
+}
+
+export interface SmartValidationRequest {
+  organization_id: string
+  theme: string
+  outcome_statement: string
+  baseline_value: number
+  target_value: number
+  timeline_months: number
+}
+
+export interface SmartValidation {
+  smart_score: number
+  issues: string[]
+  is_valid: boolean
+  criteria?: { key: string; passed: boolean; reason: string }[]
+  note?: string
 }
 
 export interface MethodologyFilter {
+  organization_id: string
   theme: string
   state: string
   scale_schools: number
@@ -327,16 +385,27 @@ export interface MethodologyFilter {
 export interface MethodologyResponse {
   methodologies: {
     name: string
+    catalog_name?: string
     description: string
     components: string[]
     geographies: string[]
     budget_range_lakhs: [number, number]
     available_components: { component: string; used_in: string[] }[]
   }[]
+  alternatives?: {
+    name: string
+    catalog_name?: string
+    description: string
+    components: string[]
+    geographies: string[]
+    budget_range_lakhs: [number, number]
+    filter_note: string
+  }[]
 }
 
 export interface SelectMethodologyRequest {
   organization_id: string
+  theme: string
   selected_methodology_ids: string[]
   custom_components: string[]
 }
@@ -352,6 +421,8 @@ export interface TheoryOfChangeResponse {
   is_valid: boolean
   logic_issues: string[]
   ai_suggestions: string[]
+  suggestion_cards?: { title: string; action: string; related_node_ids: string[] }[]
+  ai_unavailable?: boolean
   mermaid_diagram: string
   mermaid_preview_url: string
   mermaid_png_url: string
@@ -366,6 +437,7 @@ export interface StakeholderSelectRequest {
 export interface StakeholderSelectResponse {
   available_stakeholders: { stakeholder_id: string; name: string; themes: string[] }[]
   recommended_stakeholders: string[]
+  selected_stakeholders: string[]
 }
 
 export interface PracticeChangeRequest {
@@ -377,7 +449,14 @@ export interface PracticeChangeRequest {
 }
 
 export interface PracticeChangeResponse {
-  ai_suggestions: { suggested_current: string[]; suggested_desired: string[] }
+  ai_suggestions: {
+    key_idea?: string
+    current_cards?: { title: string; summary: string }[]
+    desired_cards?: { title: string; summary: string }[]
+    first_step?: string
+    suggested_current: string[]
+    suggested_desired: string[]
+  }
   validation_feedback: string[]
 }
 
@@ -398,6 +477,7 @@ export interface BaselineTargetRequest {
   indicators: {
     indicator_name: string
     baseline_value: number
+    current_value?: number | null
     target_value: number
     start_date: string
     end_date: string

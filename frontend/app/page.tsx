@@ -139,7 +139,7 @@ export default function HomePage() {
               </DropdownMenuContent>
             </DropdownMenu>
 
-            <Link href="/dashboard">
+            <Link href="/auth">
               <Button className="hidden sm:flex">
                 {language === "en" ? "Get Started" : "शुरू करें"}
                 <ArrowRight className="ml-2 h-4 w-4" />
@@ -210,13 +210,13 @@ export default function HomePage() {
           </p>
 
           <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
-            <Link href="/dashboard/organization">
+            <Link href="/auth">
               <Button size="lg" className="w-full sm:w-auto">
                 <Sparkles className="mr-2 h-5 w-5" />
                 {language === "en" ? "Start Building" : "निर्माण शुरू करें"}
               </Button>
             </Link>
-            <Link href="/dashboard">
+            <Link href="/auth">
               <Button variant="outline" size="lg" className="w-full sm:w-auto bg-transparent">
                 <FileText className="mr-2 h-5 w-5" />
                 {language === "en" ? "View Dashboard" : "डैशबोर्ड देखें"}
@@ -346,7 +346,7 @@ export default function HomePage() {
                 ? `Join NGOs across India using ${t("app.name")} to design impactful education programs`
                 : `प्रभावशाली शिक्षा कार्यक्रम डिज़ाइन करने के लिए ${t("app.name")} का उपयोग करने वाले पूरे भारत में NGOs से जुड़ें`}
             </p>
-            <Link href="/dashboard/organization">
+            <Link href="/auth">
               <Button size="lg" className="mt-8">
                 {language === "en" ? "Create Your First Program" : "अपना पहला कार्यक्रम बनाएं"}
                 <ArrowRight className="ml-2 h-5 w-5" />
