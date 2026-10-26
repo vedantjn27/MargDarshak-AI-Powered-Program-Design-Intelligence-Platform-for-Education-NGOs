@@ -1,3 +1,0 @@
-backend (Render) :  https://margdarshak-shikshalokam.onrender.com
-
-frontend (Vercel) : marg-darshak-shikshalokam.vercel.app
